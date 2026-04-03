@@ -1,0 +1,19 @@
+// AudioGenie3.idl : IDL-Quelle f?r AudioGenie3
+//
+
+// Diese Datei wird mit dem MIDL-Tool bearbeitet,
+// um den Quellcode f?r die Typbibliothek (AudioGenie3.tlb) und die Abruffunktionen zu erstellen.
+
+import "oaidl.idl";
+import "ocidl.idl";
+
+[
+	uuid(6108400A-D5CA-46E4-950F-915F3AC12341),
+	version(1.0),
+	helpstring("AudioGenie3 1.0-Typbibliothek")
+]
+library AudioGenie3Lib
+{
+	importlib("stdole2.tlb");
+};
+
