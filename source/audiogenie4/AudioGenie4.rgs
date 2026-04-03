@@ -1,0 +1,11 @@
+﻿HKCR
+{
+	NoRemove AppID
+	{
+		'%APPID%' = s 'AudioGenie4'
+		'AudioGenie4.DLL'
+		{
+			val AppID = s '%APPID%'
+		}
+	}
+}
