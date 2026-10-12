@@ -369,6 +369,37 @@ void CBlob::AddString(const LPCWSTR string)
 	ConcatInPlace(wcslen(string) * 2, string);
 }
 
+// 4.0.2: the code page of a string in a frame marked ISO-8859-1. Taggers wrote whatever the PC used there (Hebrew
+// as Windows-1255, accents as Windows-1252) or UTF-8; decoding everything with the PC's code page turned the é of "Beyoncé"
+// into a Hebrew letter on a Hebrew PC, and showed Hebrew as accented Latin on any other.
+//  - ASCII only: any code page reads it the same
+//  - valid UTF-8 with multi-byte characters: UTF-8 mislabelled as ISO-8859-1 (Latin text almost never forms it)
+//  - high bytes in runs (whole words of another alphabet): Windows-1255 when they are all Hebrew letters
+//    (0xE0-0xFA), otherwise the PC's own code page
+//  - single high bytes between ASCII letters (accents, ©, »): Windows-1252, the superset of ISO-8859-1
+static UINT ansiCodePage(const BYTE* s)
+{
+	size_t n = strlen((const char*)s);
+	bool high = false, run = false, hebrewOnly = true;
+	for (size_t i = 0; i < n; i++)
+	{
+		if (s[i] < 0x80)
+			continue;
+		high = true;
+		if (i + 1 < n && s[i + 1] >= 0x80)
+			run = true;
+		if (s[i] < 0xE0 || s[i] > 0xFA)
+			hebrewOnly = false;
+	}
+	if (!high)
+		return CP_ACP;
+	if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, (const char*)s, (int)n, NULL, 0) > 0)
+		return CP_UTF8;
+	if (run)
+		return hebrewOnly ? 1255 : CP_ACP;
+	return 1252;
+}
+
 CAtlString CBlob::getNextString(BYTE encoding, int& startPos)
 {
 	ATLASSERT(encoding >= 0 && encoding <= 3);
@@ -408,7 +439,7 @@ CAtlString CBlob::getNextString(BYTE encoding, int& startPos)
 	switch (encoding) // Encoding ID
 	{
 	case TEXT_ENCODED_ANSI: // ANSI bzw ISO-8859-1
-		if (MultiByteToWideChar(CP_ACP, 0, (const char*)(m_pData + startPos), -1, po, (int)maxBuffer) > 0)
+		if (MultiByteToWideChar(ansiCodePage(m_pData + startPos), 0, (const char*)(m_pData + startPos), -1, po, (int)maxBuffer) > 0)
 			result = CAtlString(po);
 		else
 		{

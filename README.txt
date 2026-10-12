@@ -31,6 +31,10 @@ Saves can no longer lose the audio or values that weren't changed.
   outer save's file streams (a truncated file). A caller that needs a responsive window calls the DLL from a worker
   thread.
 - UTF-16 big-endian strings no longer lose their last characters.
+- Text in frames marked ISO-8859-1 is read in the encoding it was actually written in: valid UTF-8 as UTF-8,
+  words of Hebrew letters as Windows-1255, single accented letters and symbols as Windows-1252, other words in the
+  PC's code page. It used to be read in the PC's code page only (Hebrew showed as accented Latin on most PCs, and
+  "Beyoncé" got a Hebrew letter on a Hebrew PC).
 
 Version 4.0.1
 ID3v2 saves keep the tag's own version and store text in Unicode. Up to 4.0 the save format and text encoding were
