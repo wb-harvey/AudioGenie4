@@ -339,42 +339,59 @@ bool CID3V2::RebuildFile(LPCWSTR FileName, CBlob* data)
 		fclose(Source);
 		return false;
 	};
-	
-	size_t blockSize = CTools::configValues[CONFIG_ID3V2WRITEBLOCKSIZE];
-	CBlob tmp(blockSize);
-	/* Copy data blocks */
-	if (fseek(Source, FrameOldSize, SEEK_SET) != 0) 
+
+	// 4.0.2: every read and write is checked, and the copy must hold all of the audio before it replaces the
+	// original. A read or write error (disk full, a network share dropping) used to end the copy early as if the
+	// file had ended, and the original was then deleted and the truncated copy renamed over it; when that rename
+	// failed, the audio was left only in "name~".
+	bool copied = true;
+	__int64 audioBytes = 0;
+	if (_fseeki64(Source, 0, SEEK_END) != 0 || (audioBytes = _ftelli64(Source)) < 0)
+		copied = false;
+	audioBytes -= FrameOldSize;
+	if (copied && (audioBytes < 0 || _fseeki64(Source, FrameOldSize, SEEK_SET) != 0))
 	{
 		CTools::instance().writeError(L"ID3V2 fseek(%i) fehlgeschlagen, breche Speichern ab", FrameOldSize);
-		return false;
+		copied = false;
 	}
-	if (data != NULL)
-		data->FileWrite(data->GetLength(), Destination);
-		
+	if (copied && data != NULL && data->GetLength() > 0 && data->FileWrite(data->GetLength(), Destination) != data->GetLength())
+		copied = false;
+
 	// Copy data in Blocks for large files
-	do
+	size_t blockSize = CTools::configValues[CONFIG_ID3V2WRITEBLOCKSIZE];
+	CBlob tmp(blockSize);
+	__int64 copiedBytes = 0;
+	while (copied)
 	{
-		ATLTRACE(_T("write %i bytes\n"), blockSize);
 		tmp.FileRead(blockSize, Source);
-		CTools::instance().doEvents();
-		tmp.FileWrite(tmp.GetLength(), Destination);
-		CTools::instance().doEvents();		
-	} while (tmp.GetLength() == blockSize);
-	_flushall();
-	_fcloseall();
-	CTools::instance().doEventsNow();
-	/* Replace old file and delete temporary file */
-	if (_wremove(FileName) != 0)
+		if (ferror(Source)) { copied = false; break; }
+		size_t got = tmp.GetLength();
+		if (got > 0 && tmp.FileWrite(got, Destination) != got) { copied = false; break; }
+		copiedBytes += got;
+		if (got < blockSize) break; // end of the file
+	}
+	if (copied && (copiedBytes != audioBytes || ferror(Source)))
+		copied = false;
+	// Only this save's own streams: _fcloseall closed every stream the process had open
+	if (fflush(Destination) != 0 || ferror(Destination))
+		copied = false;
+	if (fclose(Destination) != 0)
+		copied = false;
+	fclose(Source);
+
+	if (!copied)
 	{
-		// Lösche auch temp file
-		_wremove(NewFileName);
-		CTools::instance().setLastError(errno);
+		_wremove(NewFileName); // the original is untouched
+		CTools::instance().setLastError(errno != 0 ? errno : EIO);
 		return false;
 	}
-	CTools::instance().doEventsNow();
-	if (_wrename(NewFileName, FileName) != 0)
+
+	/* Replace the original with the copy in one step: it is either the old file or the new one, never missing */
+	if (!MoveFileExW(NewFileName, FileName, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
 	{
-		CTools::instance().setLastError(errno);
+		DWORD err = GetLastError();
+		_wremove(NewFileName);
+		CTools::instance().setLastError(err == ERROR_ACCESS_DENIED || err == ERROR_SHARING_VIOLATION ? EACCES : EIO);
 		return false;
 	}
 	return true;

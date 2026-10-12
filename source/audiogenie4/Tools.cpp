@@ -86,23 +86,16 @@ void CTools::reset()
 	firstMpegAudioPos = 0;
 }
 
+// 4.0.2: no longer dispatches the caller's window messages. oldTickCount was never updated, so every call
+// dispatched one, in the middle of reading a file or rebuilding it on save. A handler the message ran could call
+// the DLL again: AUDIOAnalyzeFile of another file replaced the current file under the save (its tag was saved into
+// the wrong file), and a nested save's _fcloseall closed the outer save's streams (a truncated file). A caller that
+// needs its window to stay responsive calls the DLL from a worker thread.
 void CTools::doEvents()
 {
-	DWORD ticks = GetTickCount();
-	if (ticks < oldTickCount + CTools::configValues[CONFIG_DOEVENTSMILLIS]) // nur alle eventMillis Millisekunden
-		return;
-	doEventsNow();
 }
 void CTools::doEventsNow()
 {
-	if (PeekMessageW(&msg, (HWND) NULL, 0, 0, PM_REMOVE)) 
-	{ 
-		if (msg.message == WM_QUIT)
-			return;
-		
-		TranslateMessage(&msg);
-		DispatchMessage(&msg);	
-	}  
 }
 
 void CTools::setLastError(int error, ...)

@@ -68,7 +68,14 @@ long CID3_Frame::getSize()
 	if (useTextEncoding)
 	{
 		decode();
-		if (CTools::ID3V2defaultEncodingID != encodingID)
+		// 4.0.2: only a frame that is new or was changed, or whose encoding the version being saved doesn't allow
+		// (UTF-16BE and UTF-8 before v2.4), is encoded again. Every frame used to be: the text was decoded and
+		// encoded in the default encoding, which kept only the first value of a v2.4 multi-value frame and turned
+		// an unreadable UTF-8 frame into an empty one. An untouched frame now keeps its bytes.
+		bool v24 = CTools::ID3V2newTagVersion == TAG_VERSION_2_4;
+		bool allowed = encodingID == TEXT_ENCODED_ANSI || encodingID == TEXT_ENCODED_UTF16BOM ||
+			(v24 && (encodingID == TEXT_ENCODED_UTF16 || encodingID == TEXT_ENCODED_UTF8));
+		if ((mustRebuild || !allowed) && CTools::ID3V2defaultEncodingID != encodingID)
 		{
 			encodingID = CTools::ID3V2defaultEncodingID;
 			mustRebuild = true;

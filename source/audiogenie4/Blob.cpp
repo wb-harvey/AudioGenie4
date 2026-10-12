@@ -419,12 +419,14 @@ CAtlString CBlob::getNextString(BYTE encoding, int& startPos)
 	case TEXT_ENCODED_UTF16BOM: // UTF-16 with BOM
 		if (m_pData[startPos] == 0xFE && m_pData[startPos + 1] == 0xFF) // Big Endian, Bytes vertauschen
 		{
-			for (i = startPos + 2; i < (int)size; i+=2)
+			// To the end of this string (it stopped at its length from the start of the buffer, which cut the last
+			// characters of a string that doesn't start at 0)
+			for (i = startPos + 2; i + 1 < (int)endPos; i+=2)
 				po[j++] = ((m_pData[i] << 8) + m_pData[i + 1]); 
 		}
 		else if (m_pData[startPos] == 0xFF && m_pData[startPos + 1] == 0xFE ) // little endian
 		{
-			memcpy(po, m_pData + startPos + 2, size);   
+			memcpy(po, m_pData + startPos + 2, size - 2); // the text after the BOM   
 		}
 		else // unknown BOM or corrupt
 		{
