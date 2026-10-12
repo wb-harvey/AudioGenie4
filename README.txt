@@ -17,6 +17,18 @@ This library is far superior to TagLibSharp when dealing with ID3v1, ID3v2.3, ID
 TagLibSharp uses a dangerous anti-pattern of metadata consolidation and responds to requests for tag data by giving results for other tags.
 This regularly results in garbage tag data or file corruption because different tags use different encodings (ANSI, UTF-8, UTF-16). 
 
+Version 4.0.3
+OGG Vorbis tags of any size are read and saved. Up to 4.0.2 the comments had to fit in the stream's second Ogg page:
+- Saving longer comments (a cover in METADATA_BLOCK_PICTURE, long lyrics) overran the page's lacing table, which
+  crashed the process or wrote a file players reject.
+- Reading comments that spanned pages (as ffmpeg, foobar2000 or Mp3tag write a cover) read the page headers in
+  between as text, so later fields were garbled or lost.
+Now the comment and setup packets are read whole across their pages and written back on as many pages as they need;
+the audio pages after them are renumbered (and their checksums set) when the header's page count changes. The copy
+replaces the original in one step only when every read and write succeeded, as MP3 saves do since 4.0.2. A stream
+whose header pages can't be replaced on their own (another logical stream between them, or audio on the setup
+packet's last page) is not saved and reports an error.
+
 Version 4.0.2
 Saves can no longer lose the audio or values that weren't changed.
 - A save that rebuilds the file (the new tag doesn't fit in the old one) checks every read and write, makes sure the

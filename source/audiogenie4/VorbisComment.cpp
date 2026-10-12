@@ -112,7 +112,53 @@ void CVorbisComment::AnalyzeVorbisComments(FILE *Stream)
 			item->value = temp.Mid(Separator + 1);
 			_items.Add(item);
 		}
-	} 
+	}
+}
+
+void CVorbisComment::AnalyzeVorbisComments(CBlob &Data, size_t pos)
+{
+	/* The comments from a packet read whole (an Ogg comment packet can span pages); every length is checked
+	   against what is left of the packet */
+	size_t total = Data.GetLength();
+	size_t len;
+	long Separator;
+	CBlob tmpBlob;
+	CAtlString temp;
+	// Vendor
+	if (pos + 4 > total)
+		return;
+	len = (size_t)(unsigned long)Data.GetR4B(pos);
+	pos += 4;
+	if (len > total - pos)
+		return;
+	tmpBlob.AddMemory(Data.m_pData + pos, len);
+	pos += len;
+	VendorInfo = tmpBlob.ConvertToUnicodeString(TEXT_ENCODED_UTF8);
+	// Number of fields
+	if (pos + 4 > total)
+		return;
+	Fields = Data.GetR4B(pos);
+	pos += 4;
+	for (long i = 0; i < Fields; i++)
+	{
+		if (pos + 4 > total)
+			return;
+		len = (size_t)(unsigned long)Data.GetR4B(pos);
+		pos += 4;
+		if (len > total - pos)
+			return;
+		tmpBlob.Clear();
+		tmpBlob.AddMemory(Data.m_pData + pos, len);
+		pos += len;
+		temp = tmpBlob.ConvertToUnicodeString(TEXT_ENCODED_UTF8);
+		if ((Separator = temp.Find(_T("="))) > 0)
+		{
+			item = new structField;
+			item->key = temp.Left(Separator);
+			item->value = temp.Mid(Separator + 1);
+			_items.Add(item);
+		}
+	}
 }
 
 CAtlString CVorbisComment::GetUserItem(LPCWSTR key)

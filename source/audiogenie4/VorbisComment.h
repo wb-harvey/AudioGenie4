@@ -18,7 +18,7 @@
    License along with the GNU C Library; if not, see <http://www.gnu.org/licenses/> 
 */
 
-// VorbisComment.h: Schnittstelle für die Klasse CVorbisComment.
+// VorbisComment.h: Schnittstelle fï¿½r die Klasse CVorbisComment.
 //
 //////////////////////////////////////////////////////////////////////
 #pragma once
@@ -65,6 +65,7 @@ public:
 	void ResetData();
 	void BuildVorbisComments(CBlob &Data);
 	void AnalyzeVorbisComments(FILE * Stream);
+	void AnalyzeVorbisComments(CBlob &Data, size_t pos);
 	CAtlString GetUserItem(LPCWSTR key);
 	void SetUserItem(LPCWSTR key, LPCWSTR value);
 	CAtlString GetAllKeys();

@@ -33,6 +33,9 @@
 
 COggVorbis::COggVorbis()
 {
+	HeadersRead = false;
+	HeaderEndPos = 0;
+	LastHeaderPageNumber = 0;
 }
 
 COggVorbis::~COggVorbis()
@@ -87,6 +90,7 @@ int COggVorbis::GetSamples(FILE *Source)
 bool COggVorbis::GetInfo(FILE *Source, bool withComments)
 {
 	/* Get info from file */
+	HeadersRead = false;
 	fseek(Source, CTools::ID3v2Size, SEEK_SET);
 	if (FPage.ReadFromFile(Source))
 	{
@@ -95,14 +99,31 @@ bool COggVorbis::GetInfo(FILE *Source, bool withComments)
 		Parameters.ReadFromFile(Source);
 		if (memcmp(Parameters.ID, VORBIS_PARAMETERS_ID, 7) == 0)
 		{
-			SPagePos = ftell(Source);
+			// The second page starts where the identification packet's page ends
+			long firstPageData = 0;
+			for (int i = 0; i < FPage.Segments; i++)
+				firstPageData += FPage.LacingValues[i];
+			SPagePos = CTools::ID3v2Size + 27 + FPage.Segments + firstPageData;
+			fseek(Source, SPagePos, SEEK_SET);
 			SPage.ReadFromFile(Source);
-			fseek(Source, SPagePos + SPage.Segments + 27,
-				SEEK_SET);
-			fread(Tag.ID, 1, 7, Source);
-			// Read Vorbis tag
-			if (memcmp(&Tag.ID, VORBIS_TAG_ID, 7) == 0 && withComments)
-				ReadTag(Source);
+			// The comment packet is read whole: it spans several pages when it holds a picture
+			HeadersRead = ReadHeaderPackets(Source);
+			if (HeadersRead)
+			{
+				if (withComments && CommentPacket.GetLength() >= 7 && memcmp(CommentPacket.m_pData, VORBIS_TAG_ID, 7) == 0)
+					AnalyzeVorbisComments(CommentPacket, 7);
+				TagEndPos = HeaderEndPos;
+				firstAudioPos = HeaderEndPos;
+			}
+			else
+			{
+				// Another logical stream in between, or a damaged header: the comments of a one-page packet can still
+				// be read (the file is not saved, see SaveTag)
+				fseek(Source, SPagePos + SPage.Segments + 27, SEEK_SET);
+				fread(Tag.ID, 1, 7, Source);
+				if (memcmp(&Tag.ID, VORBIS_TAG_ID, 7) == 0 && withComments)
+					ReadTag(Source);
+			}
 			// Get total number of samples
 			Samples = GetSamples(Source);
 			return true;
@@ -113,50 +134,49 @@ bool COggVorbis::GetInfo(FILE *Source, bool withComments)
 
 /* -------------------------------------------------------------------------- */
 
+bool COggVorbis::ReadHeaderPackets(FILE *Source)
+{
+	/* Reads the comment and setup packets from the pages after the identification page. False when they can't be
+	   replaced on their own: a page of another logical stream in between, audio on the setup packet's last page, or
+	   a damaged or cut-off page */
+	CommentPacket.Clear();
+	SetupPacket.Clear();
+	fseek(Source, SPagePos, SEEK_SET);
+	int packet = 2;                                   // 2 = comment, 3 = setup
+	for (int pages = 0; packet <= 3; pages++)
+	{
+		COGGHeader Page;
+		if (pages >= 4096 || !Page.ReadFromFile(Source) || Page.Serial != FPage.Serial)
+			return false;
+		for (int i = 0; i < Page.Segments; i++)
+		{
+			if (packet > 3)
+				return false;
+			BYTE len = Page.LacingValues[i];
+			CBlob &packetData = (packet == 2) ? CommentPacket : SetupPacket;
+			size_t before = packetData.GetLength();
+			if (before + len > 64 * 1024 * 1024)
+				return false;
+			packetData.AddFile(len, Source);
+			if (packetData.GetLength() != before + len)
+				return false;
+			if (len < 255)
+				packet++;                             // a segment shorter than 255 ends the packet
+		}
+		LastHeaderPageNumber = Page.PageNumber;
+		HeaderEndPos = ftell(Source);
+	}
+	return true;
+}
+
+/* -------------------------------------------------------------------------- */
+
 void COggVorbis::BuildTag()
 {
 	Data.Clear();
 	Data.AddMemory(VORBIS_TAG_ID, 7);
 	BuildVorbisComments(Data);
-}  
-
-/* -------------------------------------------------------------------------- */
-
-void COggVorbis::SetLacingValues()
-{
-	long Index, Position, Value;
-	BYTE Buffer[256];
-	// Set new lacing values for the second Ogg page
-	Position = 0;
-	Value = 0;
-	for (Index = SPage.Segments - 1; Index >= 0; Index--)
-	{
-		if (SPage.LacingValues[Index] < 0xFF)
-		{
-			Position = Index;
-			Value = 0;
-		}
-		Value += SPage.LacingValues[Index];		
-	}
-	Value = Value +	(long)Data.GetLength() - (TagEndPos - SPagePos - SPage.Segments - 27);
-	if (Value < 0)
-		Value = 0;
-	// Change lacing values at the beginning
-	for (Index = 0; Index < (Value / 0xFF); Index++)
-		Buffer[Index] = 0xFF;
-	Buffer[Index] = BYTE(Value % 0xFF);
-	if (Position + 1 < SPage.Segments)
-	{
-		for (Index = Position + 1; Index < SPage.Segments; Index++)
-		{
-			Buffer[Index - Position + (Value / 0xFF) ] = SPage.LacingValues[Index];
-		}
-	}
-	SPage.Segments = (BYTE) (SPage.Segments - (BYTE)Position + (BYTE)(Value / 0xFF) );
-	for (Index = 0; Index < SPage.Segments ; Index++)
-	{
-		SPage.LacingValues[Index] = Buffer[Index];
-	}
+	Data.AddValue(1);                                 // framing bit: the packet is written whole
 }
 
 /* -------------------------------------------------------------------------- */
@@ -166,90 +186,199 @@ unsigned long COggVorbis::CalculateCRC(unsigned long CRC, BYTE Data[], long Size
 	long Index;
 	// Calculate CRC through data
 	for (Index = 0; Index < Size; Index++)
-		CRC = (CRC << 8) XOR CRC_TABLE[((CRC >> 24) &0xff ) XOR Data[Index]];		
-	
+		CRC = (CRC << 8) XOR CRC_TABLE[((CRC >> 24) &0xff ) XOR Data[Index]];
+
 	return CRC;
 }
 
 /* -------------------------------------------------------------------------- */
 
-void COggVorbis::SetCRC(FILE *Destination)
+bool COggVorbis::WritePage(FILE *Destination, BYTE *page, size_t length)
 {
-	int Index;
-	unsigned long Value;
-	BYTE Data[512];
-	// Calculate and set checksum for Vorbis tag
-	Value = 0;
-	SPage.CopyToChar(Data);
-	// memcpy(&Data, &SPage, SPage.Segments + 27);
-	Value = CalculateCRC(Value, Data, SPage.Segments + 27);
-	fseek(Destination, SPagePos + SPage.Segments + 27, SEEK_SET);
-	for (Index = 0; Index < SPage.Segments; Index++)
-	{
-		BYTE id = SPage.LacingValues[Index];
-		if (id > 0)
-		{
-			fread(Data, 1, id, Destination);
-			Value = CalculateCRC(Value, Data, id);
-		}
-	}
-	fseek(Destination, SPagePos + 22, SEEK_SET);
-	fwrite(&Value, 1, sizeof(Value), Destination);
+	/* Sets the page checksum (computed with the checksum field zero) and writes the page */
+	memset(page + 22, 0, 4);
+	unsigned long crc = CalculateCRC(0, page, (long)length);
+	page[22] = (BYTE)crc;
+	page[23] = (BYTE)(crc >> 8);
+	page[24] = (BYTE)(crc >> 16);
+	page[25] = (BYTE)(crc >> 24);
+	return fwrite(page, 1, length, Destination) == length;
 }
 
 /* -------------------------------------------------------------------------- */
 
+static bool CopyBytes(FILE *Source, FILE *Destination, __int64 count)
+{
+	static const size_t blockSize = 1024 * 1024;
+	CBlob buffer;
+	while (count > 0)
+	{
+		size_t want = count > (__int64)blockSize ? blockSize : (size_t)count;
+		buffer.FileRead(want, Source);
+		if (buffer.GetLength() != want || fwrite(buffer.m_pData, 1, want, Destination) != want)
+			return false;
+		count -= want;
+	}
+	return true;
+}
+
 bool COggVorbis::RebuildFile(LPCWSTR FileName)
 {
+	/* Writes the file again with the new comment packet. The comment and setup packets go on new pages (as many
+	   as they need: a picture makes the comments longer than one page holds), the audio pages after them are
+	   renumbered when the header now takes a different number of pages, and the copy replaces the original in
+	   one step only when every read and write succeeded. Up to 4.0.2 the comments had to fit the second page:
+	   longer ones overran its lacing table, crashing the process or writing a broken file */
 	FILE *Source;
 	FILE *Destination;
 	CAtlString NewFileName(FileName);
-	CBlob tmp;
-	/* Rebuild the file with the new Vorbis tag */
 	if ( (Source = _wfsopen(FileName, READ_ONLY, _SH_DENYNO)) == NULL)
 	{
 		CTools::instance().setLastError(errno);
 		return false;
 	}
+	_fseeki64(Source, 0, SEEK_END);
+	__int64 sourceSize = _ftelli64(Source);
 
-	/* Create file streams */
-	// Read and Write permissons MUSS!
 	NewFileName+=TILDE;
 	if ( (Destination = _wfsopen(NewFileName, READ_AND_WRITENEW, _SH_DENYWR)) == NULL)
 	{
 		CTools::instance().setLastError(errno);
 		fclose(Source);
 		return false;
-	};
-	// Copy data blocks
-	//Destination.CopyFrom(Source, SPagePos);
-	tmp.FileRead(SPagePos, Source);
-	tmp.FileWrite(tmp.GetLength(), Destination);
-	//Destination.Write(SPage, SPage.Segments + 27);
-	SPage.WriteToFile(Destination);
-	// Destination.CopyFrom(Tag, 0); // Alles kopieren
-	Data.FileWrite(Data.GetLength(), Destination);
-	// Source.Seek(TagEndPos, soFrombeginning);
-	fseek(Source, TagEndPos, SEEK_SET);
-	// Destination.CopyFrom(Source, Source.Size - TagEndPos);
-	tmp.FileRead(CTools::FileSize - TagEndPos, Source);
-	tmp.FileWrite(tmp.GetLength(), Destination);
-	SetCRC(Destination);
-	_flushall();
-	_fcloseall();
-	CTools::instance().doEventsNow();
-	// Replace old file and delete temporary file
-	if (_wremove(FileName) != 0)
+	}
+
+	// 1. Everything up to the comment packet's first page: anything in front of the stream, the identification page
+	_fseeki64(Source, 0, SEEK_SET);
+	bool ok = sourceSize >= HeaderEndPos && CopyBytes(Source, Destination, SPagePos);
+
+	// 2. The comment and setup packets on new pages
+	CBlob *packets[2] = { &Data, &SetupPacket };
+	int pageNumber = SPage.PageNumber;
+	__int64 headerBytes = 0;
+	BYTE lacing[255];
+	int segments = 0;
+	CBlob body;
+	bool startsContinued = false;                     // the page goes on with a packet begun on the page before
+	bool packetEnds = false;                          // a packet ends on the page
+	for (int p = 0; p < 2 && ok; p++)
 	{
-		// Lösche auch temp file
-		_wremove(NewFileName);
-		CTools::instance().setLastError(errno);
+		size_t length = packets[p]->GetLength();
+		size_t offset = 0;
+		for (;;)
+		{
+			size_t segment = length - offset > 255 ? 255 : length - offset;
+			lacing[segments++] = (BYTE)segment;
+			if (segment > 0)
+				body.AddMemory(packets[p]->m_pData + offset, segment);
+			offset += segment;
+			bool done = segment < 255;
+			if (done)
+				packetEnds = true;
+			bool last = done && p == 1;
+			if (segments == 255 || last)
+			{
+				CBlob page;
+				page.AddMemory(OGG_PAGE_ID, 4);
+				page.AddValue(0);                     // stream structure version
+				page.AddValue(startsContinued ? 1 : 0);
+				// Granule position: 0 on header pages, -1 on a page where no packet ends
+				page.AddR4B(packetEnds ? 0 : 0xFFFFFFFF);
+				page.AddR4B(packetEnds ? 0 : 0xFFFFFFFF);
+				page.AddR4B(FPage.Serial);
+				page.AddR4B(pageNumber++);
+				page.AddR4B(0);                       // checksum, set by WritePage
+				page.AddValue((BYTE)segments);
+				page.AddMemory(lacing, segments);
+				page.AddBlob(body);
+				ok = WritePage(Destination, page.m_pData, page.GetLength());
+				headerBytes += page.GetLength();
+				startsContinued = !done;
+				packetEnds = false;
+				segments = 0;
+				body.Clear();
+				if (!ok)
+					break;
+			}
+			if (done)
+				break;
+		}
+	}
+
+	// 3. The pages after the header, renumbered if the header's page count changed
+	int shift = (pageNumber - 1) - LastHeaderPageNumber;
+	__int64 pos = HeaderEndPos;
+	if (ok)
+		ok = _fseeki64(Source, pos, SEEK_SET) == 0;
+	if (ok && shift == 0)
+		ok = CopyBytes(Source, Destination, sourceSize - pos);
+	else
+	{
+		CBlob page;
+		while (ok && pos < sourceSize)
+		{
+			page.Clear();
+			page.AddFile(27, Source);
+			bool isPage = page.GetLength() == 27 && memcmp(page.m_pData, OGG_PAGE_ID, 4) == 0;
+			size_t pageLength = 0;
+			if (isPage)
+			{
+				int pageSegments = page.m_pData[26];
+				page.AddFile(pageSegments, Source);
+				isPage = page.GetLength() == (size_t)(27 + pageSegments);
+				if (isPage)
+				{
+					size_t bodyLength = 0;
+					for (int i = 0; i < pageSegments; i++)
+						bodyLength += page.m_pData[27 + i];
+					page.AddFile(bodyLength, Source);
+					pageLength = 27 + pageSegments + bodyLength;
+					isPage = page.GetLength() == pageLength;
+				}
+			}
+			if (!isPage)
+			{
+				// Not a whole page (a tag after the stream, or a cut-off end): copied as it is
+				ok = _fseeki64(Source, pos, SEEK_SET) == 0 && CopyBytes(Source, Destination, sourceSize - pos);
+				pos = sourceSize;
+				break;
+			}
+			if (page.GetR4B(14) == FPage.Serial)
+			{
+				long number = page.GetR4B(18) + shift;
+				memcpy(page.m_pData + 18, &number, 4);
+				ok = WritePage(Destination, page.m_pData, pageLength);
+			}
+			else
+				ok = fwrite(page.m_pData, 1, pageLength, Destination) == pageLength; // a stream chained after this one
+			pos += pageLength;
+		}
+	}
+
+	// The copy must hold everything: the old start, the new header pages and the rest of the old file
+	if (ok && _ftelli64(Destination) != SPagePos + headerBytes + (sourceSize - HeaderEndPos))
+		ok = false;
+	if (ferror(Source))
+		ok = false;
+	if (fflush(Destination) != 0 || ferror(Destination))
+		ok = false;
+	if (fclose(Destination) != 0)
+		ok = false;
+	fclose(Source);
+
+	if (!ok)
+	{
+		_wremove(NewFileName); // the original is untouched
+		CTools::instance().setLastError(errno != 0 ? errno : EIO);
 		return false;
 	}
-	CTools::instance().doEventsNow();
-	if (_wrename(NewFileName, FileName) != 0)
+
+	/* Replace the original with the copy in one step: it is either the old file or the new one, never missing */
+	if (!MoveFileExW(NewFileName, FileName, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
 	{
-		CTools::instance().setLastError(errno);
+		DWORD err = GetLastError();
+		_wremove(NewFileName);
+		CTools::instance().setLastError(err == ERROR_ACCESS_DENIED || err == ERROR_SHARING_VIOLATION ? EACCES : EIO);
 		return false;
 	}
 	return true;
@@ -273,6 +402,11 @@ void COggVorbis::ResetData()
 	FSamples = 0;
 	Data.Clear();
 	firstAudioPos = 0;
+	CommentPacket.Clear();
+	SetupPacket.Clear();
+	HeadersRead = false;
+	HeaderEndPos = 0;
+	LastHeaderPageNumber = 0;
 	CVorbisComment::ResetData();
 }
 
@@ -350,6 +484,12 @@ bool COggVorbis::SaveTag(LPCWSTR FileName)
 	{
 		Result = GetInfo(Source, false);
 		fclose(Source);
+		if (Result && !HeadersRead)
+		{
+			// Its header pages can't be replaced on their own (see ReadHeaderPackets): the file is left alone
+			CTools::instance().setLastError(EINVAL);
+			Result = false;
+		}
 		if (Result)
 		{
 			FChannelModeID = Parameters.ChannelMode;
@@ -358,8 +498,6 @@ bool COggVorbis::SaveTag(LPCWSTR FileName)
 			FSamples = Samples;
 			/* Prepare tag data and save to file */
 			BuildTag();
-			SPage.Checksum = 0;
-			SetLacingValues();
 			Result = RebuildFile(FileName);
 		}
 	}

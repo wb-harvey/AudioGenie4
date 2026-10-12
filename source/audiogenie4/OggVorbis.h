@@ -113,12 +113,18 @@ static const unsigned int CRC_TABLE[] = {
 		void SetTagItem();
 		int GetSamples(FILE * Source);
 		bool GetInfo(FILE *Stream, bool withComments);
+		bool ReadHeaderPackets(FILE *Source);
 		void BuildTag();
-		void SetLacingValues();
 		unsigned long CalculateCRC(unsigned long CRC, BYTE Data[], long Size);
+		bool WritePage(FILE *Destination, BYTE *page, size_t length);
 		bool RebuildFile(LPCWSTR FileName);
-		void SetCRC(FILE *Destination);  
 		long firstAudioPos;
+		/* The comment and setup header packets, read whole: either can span several Ogg pages */
+		CBlob CommentPacket;
+		CBlob SetupPacket;
+		bool HeadersRead;                               /* Both packets read and they end their last page */
+		long HeaderEndPos;                              /* End of the page that completes the setup packet */
+		int LastHeaderPageNumber;                       /* Its page sequence number */
 	public:
 		/* Public declarations */
 		COggVorbis();
