@@ -70,6 +70,7 @@ public:
 	bool replaceFrame(CID3_Frame *frame);
 	bool RemoveFromFile(LPCWSTR FileName);
 	bool SaveToFile(LPCWSTR FileName);
+	void chooseSaveFormat();
 	CID3_Frame* findFrame(u32 ID, int nr = 1);	
 	CID3_Frame* findFrame(CAtlString ID);
 	CID3_Frame* findNextFrame(u32 ID, size_t& index);

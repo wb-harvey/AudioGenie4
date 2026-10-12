@@ -43,6 +43,8 @@ DWORD CTools::oldTickCount;
 BYTE CTools::ID3V2oldTagVersion = 0;
 BYTE CTools::ID3V2newTagVersion = 3; // TAG_VERSION_2_3
 BYTE CTools::ID3V2defaultEncodingID = TEXT_ENCODED_ANSI;
+bool CTools::ID3V2formatChosen = false;
+BYTE CTools::ID3V2newTagDefaultVersion = 3; // TAG_VERSION_2_3
 BYTE CTools::ID3V2Flags = 0;
 
 CTools::CTools(void)

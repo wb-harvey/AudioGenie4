@@ -63,9 +63,35 @@ bool CID3V2::setTargetFormatAndEncoding(BYTE newFormat, BYTE newEncoding)
 	}
 	// 0 = nimm default Tagformat
 	if (newFormat != 0)
+	{
 		CTools::ID3V2newTagVersion = newFormat;
-	CTools::ID3V2defaultEncodingID = newEncoding;	
+		CTools::ID3V2newTagDefaultVersion = newFormat; // also the version of tags created later
+	}
+	CTools::ID3V2defaultEncodingID = newEncoding;
+	// The caller's choice applies to the saves of the file now loaded (until the next file is analyzed)
+	CTools::ID3V2formatChosen = true;
 	return true;
+}
+
+/*
+* 4.0.1: the format and encoding of a save. Unless ID3V2SetFormatAndEncoding chose them after the file was analyzed,
+* the tag is saved in the version it was read with (a file without a tag: the last explicit format, v2.3 by
+* default) and in an encoding that can hold any text: UTF-8 for v2.4, UTF-16 with BOM for v2.2/v2.3.
+*
+* Up to 4.0 the format and encoding were process-wide and kept from save to save, starting at v2.3 with
+* ISO-8859-1. Saving a v2.4 tag made it v2.3 and dropped its v2.4-only frames (TDRC, the date), every text frame was
+* re-encoded as ISO-8859-1 (non-Latin text, e.g. Hebrew, became "?"), and a format set for one file was used for
+* every later save of any file.
+*/
+void CID3V2::chooseSaveFormat()
+{
+	if (CTools::ID3V2formatChosen)
+		return;
+	BYTE version = CTools::ID3V2oldTagVersion;
+	if (version < TAG_VERSION_2_2 || version > TAG_VERSION_2_4)
+		version = CTools::ID3V2newTagDefaultVersion;
+	CTools::ID3V2newTagVersion = version;
+	CTools::ID3V2defaultEncodingID = (version == TAG_VERSION_2_4) ? TEXT_ENCODED_UTF8 : TEXT_ENCODED_UTF16BOM;
 }
 
 bool CID3V2::ReadHeader(FILE *Stream)
@@ -130,6 +156,7 @@ void CID3V2::WriteHeader(CBlob *blob, long tagSize)
 void CID3V2::ReadFromFile(FILE *Stream)
 {
 	CTools::ID3V2oldTagVersion = 0;
+	CTools::ID3V2formatChosen = false; // a new file: its own tag version applies again (chooseSaveFormat)
 	size_t count = _frames.GetCount();
 	for (size_t i = 0; i < count; i++)
 		delete _frames.GetAt(i);
@@ -213,6 +240,7 @@ void CID3V2::parseTags(CBlob* data)
 
 bool CID3V2::SaveToFile(LPCWSTR FileName)
 {
+	chooseSaveFormat(); // before the frames are sized and written in that format and encoding
 	FILE *Stream;
 	/* Check for existing tag */
 	ATLTRACE(_T("open %s READ_ONLY\n"), FileName); 

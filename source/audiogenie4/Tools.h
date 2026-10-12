@@ -140,6 +140,10 @@ public:
 	static void setConfigValue(long key, long value);
 	static long getConfigValue(long key);
 	static BYTE ID3V2oldTagVersion, ID3V2newTagVersion, ID3V2defaultEncodingID, ID3V2Flags;
+	// 4.0.1: whether ID3V2SetFormatAndEncoding chose the save format for the file now loaded, and the version a
+	// file without a tag gets (the last explicit format, v2.3 by default). See CID3V2::chooseSaveFormat.
+	static bool ID3V2formatChosen;
+	static BYTE ID3V2newTagDefaultVersion;
 protected:
 	CTools(void);
 	virtual ~CTools(void);	

@@ -17,11 +17,12 @@ This library is far superior to TagLibSharp when dealing with ID3v1, ID3v2.3, ID
 TagLibSharp uses a dangerous anti-pattern of metadata consolidation and responds to requests for tag data by giving results for other tags.
 This regularly results in garbage tag data or file corruption because different tags use different encodings (ANSI, UTF-8, UTF-16). 
 
-
-
-
-
-
-
-
-
+Version 4.0.1
+ID3v2 saves keep the tag's own version and store text in Unicode. Up to 4.0 the save format and text encoding were
+one process-wide setting that started at ID3v2.3 with ISO-8859-1 and stayed at whatever was last set: saving a v2.4
+tag converted it to v2.3 and dropped its v2.4-only frames (TDRC, the date), every text frame was rewritten as
+ISO-8859-1 (non-Latin text such as Hebrew became "?"), and a format set for one file applied to every later save.
+Now, unless ID3V2SetFormatAndEncoding is called after the file is analyzed, a save uses the version the tag was read
+with (UTF-8 for v2.4, UTF-16 with BOM for v2.2/v2.3); a file without a tag gets the last format set explicitly
+(v2.3 by default). An explicit ID3V2SetFormatAndEncoding applies to the saves of the file now loaded.
+The file and product version is now 4.0.1.0 (4.0 still reported the 2.0.4.0 it inherited from AudioGenie2).
