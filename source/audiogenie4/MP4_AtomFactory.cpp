@@ -272,16 +272,24 @@ static CAtlString freeformText(CMP4Atom *atom, u32 boxType)
 	{
 		u32 size = (u32)b.Get4B(pos);
 		u32 type = (u32)b.Get4B(pos + 4);
-		if (size < 12 || pos + size > len)
+		// (size > len - pos, not pos + size > len: a huge size wrapped the sum around in the 32-bit build, and
+		// the walk went back to the start for ever on a damaged atom)
+		if (size < 12 || size > len - pos)
 			break;
 		if (type == boxType)
 		{
-			// 'name': size, type, version/flags; 'data': size, type, type indicator, locale
+			// 'mean', 'name': size, type, version/flags; 'data': size, type, type indicator, locale
 			size_t textStart = pos + (boxType == 'data' ? 16 : 12);
 			if (textStart >= pos + size)
 				return EMPTY;
 			int n = (int)(pos + size - textStart);
 			const char *utf8 = (const char *)(b.m_pData + textStart);
+			// up to the first NUL, as before 4.0.4.3 (a tagger may end the text with one)
+			const char *nul = (const char *)memchr(utf8, 0, n);
+			if (nul != NULL)
+				n = (int)(nul - utf8);
+			if (n <= 0)
+				return EMPTY;
 			int wlen = MultiByteToWideChar(CP_UTF8, 0, utf8, n, NULL, 0);
 			if (wlen <= 0)
 				return EMPTY;
@@ -302,5 +310,9 @@ CAtlString CMP4_AtomFactory::getiTuneText(CMP4Atom *atom)
 CAtlString CMP4_AtomFactory::getiTuneFrame(CMP4Atom *atom)
 {
 	return freeformText(atom, 'name');
+}
+CAtlString CMP4_AtomFactory::getiTuneMean(CMP4Atom *atom)
+{
+	return freeformText(atom, 'mean');
 }
 

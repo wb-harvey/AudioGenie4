@@ -17,6 +17,15 @@ This library is far superior to TagLibSharp when dealing with ID3v1, ID3v2.3, ID
 TagLibSharp uses a dangerous anti-pattern of metadata consolidation and responds to requests for tag data by giving results for other tags.
 This regularly results in garbage tag data or file corruption because different tags use different encodings (ANSI, UTF-8, UTF-16). 
 
+Version 4.0.4.4
+- A damaged MP4 freeform ("----") atom no longer hangs the read: a huge box size wrapped the bounds check
+  around in the 32-bit build, and the walk over the atom's boxes never ended.
+- MP4GetiTuneFrame/MP4SetiTuneFrame match a freeform atom by its name under the com.apple.iTunes naming
+  authority only (4.0.4.3 matched any mean, so an atom of the same name under another one was replaced or removed).
+- MP4SetiTuneFrame with an empty text removes every atom of that name (only the first was).
+- A freeform atom's text ends at its first NUL again.
+- APESaveChangesToFile stops when the APE footer's size reaches past the start of the file (a damaged tag):
+  it cut nothing and wrote the new tags after the old ones.
 Version 4.0.4.3
 MP4 freeform ("----") atoms, such as iTunes custom fields (----:com.apple.iTunes:NAME):
 - MP4SetiTuneFrame with an empty text removes the atom. It removed nothing: the removal compared the atom's

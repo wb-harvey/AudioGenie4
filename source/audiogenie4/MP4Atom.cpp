@@ -55,7 +55,10 @@ CMP4Atom* CMP4Atom::find(CAtlString atomID)
 	CAtlString pfad = getPath();
 	if (_frameID == MP4_ITUN && atomID.Left(24).Compare(_T("moov.udta.meta.ilst.----")) == 0)
 	{
-		if (atomID.Mid(25).Compare(CMP4_AtomFactory::instance()->getiTuneFrame(this)) == 0)
+		// the name, under the iTunes naming authority (the one SetItuneText writes): an atom of the same name
+		// under another mean (e.g. org.musicbrainz) is another field, and was replaced or removed in its place
+		if (atomID.Mid(25).Compare(CMP4_AtomFactory::instance()->getiTuneFrame(this)) == 0 &&
+			CMP4_AtomFactory::instance()->getiTuneMean(this).CompareNoCase(_T("com.apple.iTunes")) == 0)
 			return this;			
 	}
 	if (pfad.CompareNoCase(atomID) != 0)

@@ -301,8 +301,9 @@ void CMP4::SetItuneText(CAtlString frame, CAtlString newText)
 	{
 		// The atom of that name: removeAtom(path) compares the path alone ("...ilst.----"), which never names a
 		// freeform atom, so an empty text removed nothing (4.0.4.2 and earlier). find() matches it by name.
-		CMP4Atom* old = mainContainer->find(suchPfad);
-		if (old != NULL)
+		// every atom of that name: with two, the second one's value came back after the first was removed
+		CMP4Atom* old;
+		for (int guard = 0; guard < 64 && (old = mainContainer->find(suchPfad)) != NULL; guard++)
 			mainContainer->removeAtom(old);
 		return;
 	}

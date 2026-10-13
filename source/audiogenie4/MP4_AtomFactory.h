@@ -66,6 +66,7 @@ public:
 	CAtlString getText(CMP4Atom *atom);
 	CAtlString getiTuneText(CMP4Atom *atom);
 	CAtlString getiTuneFrame(CMP4Atom *atom);
+	CAtlString getiTuneMean(CMP4Atom *atom);
 	void setText(CMP4Atom *atom, CAtlString newText);
 	void setItuneText(CMP4Atom *atom, CAtlString frame, CAtlString newText);
 	void setTrack(CMP4Atom *atom, BYTE von, BYTE bis);

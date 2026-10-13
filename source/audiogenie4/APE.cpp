@@ -158,8 +158,15 @@ bool CAPE::TruncateFile(LPCWSTR FileName, int Offset)
 	if( _wsopen_s(&fh,  FileName, _O_RDWR | _O_BINARY, _SH_DENYWR, _S_IREAD | _S_IWRITE )  == 0 )
 	{
 		long ln = _filelength(fh) - Offset;
-		if (ln > 0)
-			_chsize_s(fh, ln);
+		if (ln <= 0)
+		{
+			// the tags' sizes reach past the start of the file (a damaged APE footer): nothing is cut, and the save
+			// stops (it went on, and the new tags were written after the old ones)
+			_close( fh );
+			CTools::instance().setLastError(ERR_INVALID_FORMAT);
+			return false;
+		}
+		_chsize_s(fh, ln);
 		_close( fh );
 		return true;
 	}
