@@ -158,7 +158,7 @@ bool CAPE::TruncateFile(LPCWSTR FileName, int Offset)
 	if( _wsopen_s(&fh,  FileName, _O_RDWR | _O_BINARY, _SH_DENYWR, _S_IREAD | _S_IWRITE )  == 0 )
 	{
 		long ln = _filelength(fh) - Offset;
-		if (ln <= 0)
+		if (Offset < 0 || ln <= 0)
 		{
 			// the tags' sizes reach past the start of the file (a damaged APE footer): nothing is cut, and the save
 			// stops (it went on, and the new tags were written after the old ones)
@@ -252,7 +252,9 @@ bool CAPE::SaveTag(LPCWSTR FileName)
 bool CAPE::ReadFromFile(FILE *Stream)
 {
 	/* Process data if loaded and footer is valid */
-	if (ReadFooter(Stream))
+	// a footer whose size can't be: below its own 32 bytes (2 GB or more reads negative), or longer than the
+	// file with the ID3v1 tag (the fields were then read from wherever the failed seek left the stream)
+	if (ReadFooter(Stream) && TagInfo.Size >= 32 && (__int64)TagInfo.Size + CTools::ID3v1Size <= (__int64)CTools::FileSize)
 	{
 		CTools::APESize = TagInfo.Size;
 		FVersion = TagInfo.Version;
@@ -274,11 +276,23 @@ bool CAPE::RemoveFromFile(LPCWSTR FileName, bool saveID3v1Tag)
 		tmpid3v1.ReadFromFile(Source);
 
 		bool result = ReadFooter(Source);
+		__int64 fileLength = _filelengthi64(_fileno(Source));
 		fclose(Source);
 		if (result)
 		{
+			// A damaged footer: a size below the footer's own 32 bytes (a size of 2 GB or more reads negative), or
+			// one that, with the header and the ID3v1 tag, reaches the start of the file. The cut went past the
+			// start (4.0.4.4 refused that), or, negative, grew the file with zeros; nothing is cut and the save stops.
+			// (The footer's own size, before the header is added: a size of 8 with the header passed as 40.)
+			bool damaged = TagInfo.Size < 32;
 			if ( (TagInfo.Flags >> 31) != 0 )
 				TagInfo.Size+= APE_TAG_HEADER_SIZE;
+			if (damaged || TagInfo.Size < 32 || (__int64)TagInfo.Size + tmpid3v1.GetSize() >= fileLength)
+			{
+				CTools::instance().setLastError(ERR_INVALID_FORMAT);
+				TagInfo.Reset();
+				return false;
+			}
 			// APE + ID3v1 Tag löschen!
 			result = TruncateFile(FileName, tmpid3v1.GetSize() + TagInfo.Size);
 			// ID3v1-Tag wieder speichern falls vorhanden und erwünscht

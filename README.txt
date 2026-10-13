@@ -17,6 +17,12 @@ This library is far superior to TagLibSharp when dealing with ID3v1, ID3v2.3, ID
 TagLibSharp uses a dangerous anti-pattern of metadata consolidation and responds to requests for tag data by giving results for other tags.
 This regularly results in garbage tag data or file corruption because different tags use different encodings (ANSI, UTF-8, UTF-16). 
 
+Version 4.0.4.5
+- APESaveChangesToFile and APERemoveTag check the APE footer's size before cutting: below 32 bytes (a size of
+  2 GB or more read as negative) or reaching the start of the file with the ID3v1 tag, the tag is damaged and
+  nothing is cut (error 218). A negative size grew the file with zeros, up to gigabytes, in 4.0.4.4 and earlier.
+- Reading a damaged APE tag no longer hangs: an item key running to the end of the file looped for ever, and a
+  footer size that can't fit the file is now taken as no APE tag.
 Version 4.0.4.4
 - A damaged MP4 freeform ("----") atom no longer hangs the read: a huge box size wrapped the bounds check
   around in the 32-bit build, and the walk over the atom's boxes never ended.

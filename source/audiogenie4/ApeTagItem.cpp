@@ -52,11 +52,15 @@ bool CApeTagItem::ReadFromFile(FILE *Stream)
 	  return false;
   Flags = (long)tmp.GetR4B(4);  // Tag flags
   Key.Empty();
-  fread(&NextChar, 1, 1, Stream);
-  while (NextChar != 0)
+  // up to its NUL; the end of the file (or a key past APE's 255 characters) is a damaged item: the loop
+  // never checked the read, and at the end of the file it kept the last character and spun for ever
+  for (;;)
   {
+    if (fread(&NextChar, 1, 1, Stream) != 1 || Key.GetLength() > 255)
+      return false;
+    if (NextChar == 0)
+      break;
     Key+= NextChar;
-    fread(&NextChar, 1, 1, Stream);            
   }
   Value.FileRead(Size, Stream);  
   return (errno == 0);
