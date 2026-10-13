@@ -130,6 +130,7 @@ static const LPCWSTR ZAHL_GENRE_PFAD = _T("moov.udta.meta.ilst.gnre");
 static const LPCWSTR STSD_PFAD = _T("moov.trak.mdia.minf.stbl.stsd");
 
 static const LPCWSTR STCO_PFAD = _T("moov.trak.mdia.minf.stbl.stco");
+static const LPCWSTR CO64_PFAD = _T("moov.trak.mdia.minf.stbl.co64");
 
 static const LPCWSTR MDHD_PFAD = _T("moov.trak.mdia.mdhd");
 

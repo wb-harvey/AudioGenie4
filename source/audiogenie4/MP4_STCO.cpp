@@ -27,6 +27,11 @@ CMP4_STCO::CMP4_STCO(void)
 	setFrameID(MP4_STCO);
 }
 
+CMP4_STCO::CMP4_STCO(u32 frameID)
+{
+	setFrameID(frameID);
+}
+
 CMP4_STCO::~CMP4_STCO(void)
 {
 }
@@ -37,10 +42,21 @@ void CMP4_STCO::move(long offset, FILE* Destination)
 	{
 		u32 count = _blob.Get4B(4);
 		u32 lfd, entry;
-		CBlob tmp(count*4+4);
+		bool wide = getFrameID() == MP4_CO64;
+		if (_blob.GetLength() < 8 + (size_t)count * (wide ? 8 : 4))
+			return;
+		CBlob tmp(count*(wide ? 8 : 4)+8);
 		tmp.AddMemory(_blob.m_pData, 8);
 		for (lfd = 0; lfd < count; lfd++)
 		{
+			if (wide)
+			{
+				unsigned __int64 v = ((unsigned __int64)(u32)_blob.Get4B(lfd*8 + 8) << 32) | (u32)_blob.Get4B(lfd*8 + 12);
+				v += offset;
+				tmp.Add4B((u32)(v >> 32));
+				tmp.Add4B((u32)v);
+				continue;
+			}
 			entry = _blob.Get4B(lfd*4 + 8) + offset;
 			tmp.Add4B(entry);
 		}

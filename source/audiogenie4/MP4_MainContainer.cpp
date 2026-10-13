@@ -48,43 +48,38 @@ CMP4Atom* CMP4_MainContainer::find(CAtlString atomID, int count)
 	return NULL;
 }
 
-void CMP4_MainContainer::adjustPadding(u32 size)
+// Where the padding goes: right after moov (before mdat when a file has no moov).
+static size_t PaddingIndex(CAtlArray<CMP4Atom*>& children)
 {
-	// Ist Padding erwünscht ? Wenn nein, dann lösche das Padding-Atom
-	// Padding desired? if not, delete padding atom
-	if (size <= 0)
-	{
-		this->removeAtom(L"free");
-		return;
-	}
-	// Suche Padding Atom, wenn da ist, passe es an
-	// ansonsten lege ein neues Padding Atom an
-	
-	// search for padding atom. if found, adopt it.
-	// if not, create new paddint atom
-	CMP4Atom* atom = find(_T("free"));
-	if (atom != NULL)
-	{
-		atom->_blob.AddValue(0, size);
-		return;
-	}
-	// kein Padding da, lege neues an
-	// no padding atom found, create new
-	
-	// Suche mdat Container und lege davor das Padding
-	// search for mdat container and add padding prior to this
-	size_t counts = _children.GetCount();
+	size_t counts = children.GetCount();
 	for (size_t i = 0; i < counts; i++)
+		if (children[i]->getFrameID() == MP4_MOOV)
+			return i + 1;
+	for (size_t i = 0; i < counts; i++)
+		if (children[i]->getFrameID() == MP4_MDAT)
+			return i;
+	return counts;
+}
+
+void CMP4_MainContainer::removePadding()
+{
+	// only the free atoms right after moov: others (before moov, after mdat) keep their place,
+	// so the atoms after them do too
+	size_t at = PaddingIndex(_children);
+	while (at < _children.GetCount() && _children[at]->getFrameID() == 'free')
 	{
-		atom = _children[i]->find(_T("mdat"));
-		if (atom != NULL)
-		{
-			atom = CMP4_AtomFactory::instance()->createAtom('free');
-			atom->_blob.AddValue(0, size);
-			_children.InsertAt(i, atom);
-			return;
-		}
+		_children[at]->remove();
+		delete _children[at];
+		_children.RemoveAt(at);
 	}
+}
+
+void CMP4_MainContainer::addPadding(u32 payload)
+{
+	// a free atom of payload + 8 bytes, right after moov
+	CMP4Atom* atom = CMP4_AtomFactory::instance()->createAtom('free');
+	atom->_blob.AddValue(0, payload);
+	_children.InsertAt(PaddingIndex(_children), atom);
 }
 
 void CMP4_MainContainer::save(FILE *stream)

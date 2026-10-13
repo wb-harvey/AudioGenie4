@@ -546,7 +546,7 @@ bool CMP4::SaveToFile(LPCWSTR FileName)
 	atom = newData->find(_T("moov.udta.meta.free"));
 	if (atom != NULL)
 		newData->removeAtom(atom);
-	newData->adjustPadding(0);
+	newData->removePadding();
 	if (oldTaggings != NULL)
 	{
 		newData->checkMetaBox();
@@ -563,8 +563,11 @@ bool CMP4::SaveToFile(LPCWSTR FileName)
 	u32 optimalSize = sizeAfter;
 	if (paddingBlockSize > 0)
 		optimalSize = ((u32)(sizeAfter / paddingBlockSize) + 1) * paddingBlockSize;
+	// in place, the padding after moov takes exactly the bytes moov gave up, so mdat stays
+	// where it is: a free atom is 8 bytes at least, so 1 to 8 bytes can't be filled
+	u32 freed = (sizeAfter <= sizeBefore) ? sizeBefore - sizeAfter : 0;
 
-	if (sizeAfter > sizeBefore || optimalSize < sizeBefore || paddingBlockSize == 0)
+	if (sizeAfter > sizeBefore || optimalSize < sizeBefore || paddingBlockSize == 0 || (freed > 0 && freed <= 8))
 	{ 
 		CTools::instance().writeDebug(_T("Rebuild mp4 tag")); 
 		mdat->setSameFile(false);
@@ -578,21 +581,35 @@ bool CMP4::SaveToFile(LPCWSTR FileName)
 			fclose(Source);
 			return false;
 		};
-		/* adjust padding  */
-		newData->adjustPadding(paddingBlockSize - 8);		
+		/* adjust padding: a free atom of paddingBlockSize bytes after moov */
+		if (paddingBlockSize >= 8)
+			newData->addPadding((u32)paddingBlockSize - 8);
 		/* Copy atom blocks */
 		newData->save(Destination);
 		_flushall();
-		/* if mdat position is different and stco is present, then adjust the stco atom */
-		CMP4_STCO* stco = cSTCO(newData->find(STCO_PFAD));
+		/* if mdat moved, move every track's chunk offsets (stco, or co64 in large files) with it */
 		CMP4_MDAT* mdat = cMDAT(newData->find(MDAT_PFAD));
 		// Indizes richten
 		// align indices
-		if (stco != NULL && mdat != NULL && mdat->getPosition() != oldMDATPosition)
+		if (mdat != NULL && mdat->getPosition() != oldMDATPosition)
 		{
-			stco->move(mdat->getPosition() - oldMDATPosition, Destination);
+			long delta = mdat->getPosition() - oldMDATPosition;
+			for (int n = 1; ; n++)
+			{
+				CMP4Atom* offsets = newData->find(STCO_PFAD, n);
+				if (offsets == NULL)
+					break;
+				cSTCO(offsets)->move(delta, Destination);
+			}
+			for (int n = 1; ; n++)
+			{
+				CMP4Atom* offsets = newData->find(CO64_PFAD, n);
+				if (offsets == NULL)
+					break;
+				cSTCO(offsets)->move(delta, Destination);
+			}
 			_flushall();
-		}		
+		}
 		_fcloseall();
 		delete newData;
 		/* Replace old file and delete temporary file */
@@ -617,7 +634,8 @@ bool CMP4::SaveToFile(LPCWSTR FileName)
 	mdat->setSameFile(false);
 	// Passe Padding an
 	errno = 0;
-	newData->adjustPadding(sizeBefore - sizeAfter);
+	if (freed > 0)
+		newData->addPadding(freed - 8);	// the free atom's 8-byte header is part of what it fills
 	fseek(Source, CTools::ID3v2Size, SEEK_SET);
 	newData->save(Source);
 	_flushall();

@@ -45,6 +45,7 @@ static enum MP4_FRAMETYPES {
 	MP4_SOUN = 'soun',
 	MP4_STBL = 'stbl',
 	MP4_STCO = 'stco',
+	MP4_CO64 = 'co64',
 	MP4_STSD = 'stsd',
 	MP4_TRAK = 'trak',
 	MP4_UDTA = 'udta',

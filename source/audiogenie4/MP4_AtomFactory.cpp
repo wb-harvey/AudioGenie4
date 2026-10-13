@@ -79,6 +79,7 @@ CMP4Atom* CMP4_AtomFactory::createAtom(u32 atomID) const
 	case MP4_SOUN: return new CMP4_SOUN();
 	case MP4_STBL: return new CMP4_Container(MP4_STBL);
 	case MP4_STCO: return new CMP4_STCO();
+	case MP4_CO64: return new CMP4_STCO(MP4_CO64);
 	case MP4_TRAK: return new CMP4_Container(MP4_TRAK);
 	case MP4_VMHD: return new CMP4_Container(MP4_VMHD);
 	case MP4_SMHD:

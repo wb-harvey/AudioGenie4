@@ -27,6 +27,9 @@ public:
 	~CMP4_MainContainer(void);
 	CMP4Atom* find(CAtlString atomID, int count = 1);
 	void save(FILE *stream);
-	void adjustPadding(u32 size);
+	// The padding is the run of top-level free atoms right after moov: with it, moov can
+	// change size while everything after it (mdat) stays where it is.
+	void removePadding();
+	void addPadding(u32 payload);
 	void checkMetaBox();
 };

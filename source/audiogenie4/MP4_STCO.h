@@ -26,6 +26,7 @@ class CMP4_STCO :
 {
 public:
 	CMP4_STCO(void);
+	CMP4_STCO(u32 frameID);	// MP4_CO64: the same with 64-bit offsets
 	~CMP4_STCO(void);
 	void move(long newDataPosition, FILE *Destination);
 	void save(FILE *Destination);

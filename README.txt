@@ -17,6 +17,17 @@ This library is far superior to TagLibSharp when dealing with ID3v1, ID3v2.3, ID
 TagLibSharp uses a dangerous anti-pattern of metadata consolidation and responds to requests for tag data by giving results for other tags.
 This regularly results in garbage tag data or file corruption because different tags use different encodings (ANSI, UTF-8, UTF-16). 
 
+Version 4.0.4.1
+M4A/MP4 tag saves no longer break the audio of files without padding after the moov atom (ffmpeg's -movflags
+faststart writes them that way), nor of files whose moov comes after the audio.
+- A save whose new tag was smaller than the old one, in a file without padding, put a free atom 8 bytes larger than
+  the space given up in front of the audio: the audio moved 8 bytes while the chunk offsets (stco) stayed, so every
+  frame was read 8 bytes off. The free atom now fills exactly the space given up (a gap of 1 to 8 bytes, too small
+  for one, rebuilds the file instead).
+- The padding was always put in front of the audio, so in a file with the moov after the audio (as ffmpeg writes
+  without faststart) a save moved the audio and not its offsets. Padding now goes right after moov, wherever moov is.
+- A rebuilt file (the tag doesn't fit) moves the chunk offsets of every track, not only the first, and the 64-bit
+  offsets (co64) of large files too.
 Version 4.0.3
 OGG Vorbis tags of any size are read and saved. Up to 4.0.2 the comments had to fit in the stream's second Ogg page:
 - Saving longer comments (a cover in METADATA_BLOCK_PICTURE, long lyrics) overran the page's lacing table, which
