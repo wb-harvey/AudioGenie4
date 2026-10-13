@@ -17,6 +17,11 @@ This library is far superior to TagLibSharp when dealing with ID3v1, ID3v2.3, ID
 TagLibSharp uses a dangerous anti-pattern of metadata consolidation and responds to requests for tag data by giving results for other tags.
 This regularly results in garbage tag data or file corruption because different tags use different encodings (ANSI, UTF-8, UTF-16). 
 
+Version 4.0.4.2
+APE tag saves on MP3 files no longer cut the end of the audio. Saving an APE tag over an existing one in a file
+that also has an ID3v1 tag removed the old APE and ID3v1 tags, then cut 128 more bytes for the ID3v1 tag it had
+already removed: every such save took 128 bytes off the last audio frame. The ID3v1 tag is now cut there only when
+there was no APE tag to remove.
 Version 4.0.4.1
 M4A/MP4 tag saves no longer break the audio of files without padding after the moov atom (ffmpeg's -movflags
 faststart writes them that way), nor of files whose moov comes after the audio.

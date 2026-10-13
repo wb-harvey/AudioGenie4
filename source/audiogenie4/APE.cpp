@@ -303,7 +303,10 @@ bool CAPE::SaveToFile(LPCWSTR FileName)
 	if (result == false && CTools::instance().getLastError() != ERR_TAG_NOT_EXIST)
 		return false;
 	CTools::instance().setLastError(0);
-	if (tmpid3v1.GetSize() > 0)
+	// With no APE tag, RemoveFromFile cut nothing: the ID3v1 tag is cut here (SaveTag puts it back after the new
+	// APE tag). When it removed an APE tag it had already cut the ID3v1 tag with it, and cutting 128 more bytes
+	// took them off the end of the audio, on every save (4.0.4.1 and earlier).
+	if (!result && tmpid3v1.GetSize() > 0)
 		TruncateFile(FileName, 128);
 	return SaveTag(FileName);  
 }
