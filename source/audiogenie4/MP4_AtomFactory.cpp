@@ -260,18 +260,47 @@ void CMP4_AtomFactory::setItuneText(CMP4Atom *atom, CAtlString frame, CAtlString
 	atom->_blob.Add4B(0); // Reserved
 	atom->_blob.AddBlob(tmp);
 }
+// The text of a freeform ("----") atom's 'name' or 'data' box, found by walking its boxes: the name was read at
+// byte 40 and the data 15 bytes after it, right only when the 'mean' box is exactly "com.apple.iTunes" (28
+// bytes); another naming authority (or a mean written another way) read garbage (4.0.4.2 and earlier).
+static CAtlString freeformText(CMP4Atom *atom, u32 boxType)
+{
+	CBlob &b = atom->_blob;
+	size_t len = b.GetLength();
+	size_t pos = 0;
+	while (pos + 12 <= len)
+	{
+		u32 size = (u32)b.Get4B(pos);
+		u32 type = (u32)b.Get4B(pos + 4);
+		if (size < 12 || pos + size > len)
+			break;
+		if (type == boxType)
+		{
+			// 'name': size, type, version/flags; 'data': size, type, type indicator, locale
+			size_t textStart = pos + (boxType == 'data' ? 16 : 12);
+			if (textStart >= pos + size)
+				return EMPTY;
+			int n = (int)(pos + size - textStart);
+			const char *utf8 = (const char *)(b.m_pData + textStart);
+			int wlen = MultiByteToWideChar(CP_UTF8, 0, utf8, n, NULL, 0);
+			if (wlen <= 0)
+				return EMPTY;
+			CAtlString text;
+			MultiByteToWideChar(CP_UTF8, 0, utf8, n, text.GetBuffer(wlen), wlen);
+			text.ReleaseBuffer(wlen);
+			return text;
+		}
+		pos += size;
+	}
+	return EMPTY;
+}
+
 CAtlString CMP4_AtomFactory::getiTuneText(CMP4Atom *atom)
 {
-	atom;
-	int start = 40;
-	atom->_blob.getNextString(TEXT_ENCODED_UTF8, start);
-	start+=15;
-	return atom->_blob.getNextString(TEXT_ENCODED_UTF8, start);
+	return freeformText(atom, 'data');
 }
 CAtlString CMP4_AtomFactory::getiTuneFrame(CMP4Atom *atom)
 {
-	atom;
-	int start = 40;
-	return atom->_blob.getNextString(TEXT_ENCODED_UTF8, start);	
+	return freeformText(atom, 'name');
 }
 

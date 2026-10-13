@@ -299,7 +299,11 @@ void CMP4::SetItuneText(CAtlString frame, CAtlString newText)
 	suchPfad.Format(_T("%s.%s"), ITUN_PFAD, frame); 
 	if (newText.IsEmpty())
 	{
-		mainContainer->removeAtom(suchPfad);
+		// The atom of that name: removeAtom(path) compares the path alone ("...ilst.----"), which never names a
+		// freeform atom, so an empty text removed nothing (4.0.4.2 and earlier). find() matches it by name.
+		CMP4Atom* old = mainContainer->find(suchPfad);
+		if (old != NULL)
+			mainContainer->removeAtom(old);
 		return;
 	}
 	mainContainer->checkMetaBox();
