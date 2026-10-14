@@ -969,10 +969,10 @@ Namespace AudioGenie
         Private Shared Function ID3V2GetAddendumTypeW(ID As String) As Short
         End Function
         <DllImport(DLL, EntryPoint:="ID3V2SetAddendumDescriptionW", CharSet:=CharSet.Unicode, SetLastError:=True)>
-        Private Shared Function ID3V2SetAddendumDescriptionW(ID As String, newDescription As String) As Integer
+        Private Shared Function ID3V2SetAddendumDescriptionW(ID As String, newDescription As String) As Short
         End Function
         <DllImport(DLL, EntryPoint:="ID3V2SetAddendumTitleW", CharSet:=CharSet.Unicode, SetLastError:=True)>
-        Private Shared Function ID3V2SetAddendumTitleW(ID As String, newTitle As String) As Integer
+        Private Shared Function ID3V2SetAddendumTitleW(ID As String, newTitle As String) As Short
         End Function
         <DllImport(DLL, EntryPoint:="ID3V2GetSubFramesW", CharSet:=CharSet.Unicode, SetLastError:=True)>
         Private Shared Function ID3V2GetSubFramesW(ID As String) As Short

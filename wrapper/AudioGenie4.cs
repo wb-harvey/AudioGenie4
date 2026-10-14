@@ -1164,11 +1164,11 @@ namespace AudioGenie
         [LibraryImport("AudioGenie4.dll", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
         private static partial IntPtr WAVGetTextFrameW(WAVFRAMES FrameID);
         [LibraryImport("AudioGenie4.dll", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
-        private static partial IntPtr WAVSaveChangesW();
+        private static partial short WAVSaveChangesW(); // returns short (-1 / 0): read as IntPtr, the upper bits made a failed save look successful on x64
         [LibraryImport("AudioGenie4.dll", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
         private static partial short WAVSaveChangesToFileW(string FileName);
         [LibraryImport("AudioGenie4.dll", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
-        private static partial IntPtr WAVSetCartChunkEntryW(short Index, string newValue);
+        private static partial void WAVSetCartChunkEntryW(short Index, string newValue);
         [LibraryImport("AudioGenie4.dll", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
         private static partial void WAVSetTextFrameW(WAVFRAMES FrameID, string textString);
         [LibraryImport("AudioGenie4.dll", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]

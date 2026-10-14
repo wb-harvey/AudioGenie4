@@ -79,6 +79,9 @@ WMA / WAV / MPEG
   sizes no longer overflow the heap; long values move to the Metadata Library instead of a cut 16-bit length;
   clearing every extended field works.
 - MPEGSetCopyrightedW/OriginalW/PrivateW only write into MPEG files, at a checked frame header.
+Wrappers
+- C#: WAVSaveChangesW returns short (it was declared IntPtr: on x64 a failed WAV save could read as success);
+  WAVSetCartChunkEntryW returns nothing. VB: ID3V2SetAddendumDescriptionW/TitleW return Short, not Integer.
 
 Version 4.0.4.6
 - An APE item whose size is near 2 GB no longer crashes the read: the size check wrapped around in 32 bits, passed,
