@@ -17,6 +17,19 @@ This library is far superior to TagLibSharp when dealing with ID3v1, ID3v2.3, ID
 TagLibSharp uses a dangerous anti-pattern of metadata consolidation and responds to requests for tag data by giving results for other tags.
 This regularly results in garbage tag data or file corruption because different tags use different encodings (ANSI, UTF-8, UTF-16). 
 
+Version 4.0.4.9
+- ID3v1 and Lyrics3 text ends at its first NUL (the NUL padding of an ID3v1 field was returned too, and a v1.1
+  comment ended with the track number) and is read in the code page it was written in, as ID3v2 since 4.0.2
+  (Hebrew from a Hebrew PC read as accented Latin elsewhere).
+- GRP1 (iTunes grouping), MVNM and MVIN (movement name, number) are text frames: ID3V2GetTextFrameW reads them.
+- An M4A save that rebuilds the file keeps an ID3v1 tag at its end (only the in-place save kept it).
+- A WMA rebuild writes the new file size into the File Properties object.
+- Picture links ("-->") read from a tag aren't opened on a drive letter mapped to a network share either.
+- ID3V2GetAddendumTitleW/DescriptionW read the chapter's TIT2/TIT3 sub-frames (a title set with
+  ID3V2SetTextSubFrameW read as the old one).
+- MPEGSetCopyrightedW/OriginalW/PrivateW accept .MSF files, as AUDIOAnalyzeFileW does.
+Wrappers: SafeStr reads up to the first NUL again (PtrToStringUni) and still frees the string.
+
 Version 4.0.4.8
 Stability check of 4.0.4.7 by fuzzing, x64 and x86: 60,000 damaged files (every format, 1 to 8 changes each,
 analyzed, every getter read, saved) and 13,500 runs of 120 random API calls with hostile arguments (NULL and

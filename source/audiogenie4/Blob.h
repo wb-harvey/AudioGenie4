@@ -101,6 +101,7 @@ public:
 	unsigned __int16 GetS2B(size_t nIndex);
 	
 	CAtlString GetStringAt(size_t nPos, size_t nLength);
+	CAtlString GetAnsiStringAt(size_t nPos, size_t nLength);
 	void Clear() { Free(); };
 	size_t GetLength() { return m_CurrentLength; };
 	void FileRead(size_t nLen, FILE *Stream);

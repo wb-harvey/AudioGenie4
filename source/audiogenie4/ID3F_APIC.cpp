@@ -87,7 +87,7 @@ static bool readPictureFile(CBlob& data, LPCWSTR fileName, bool fromTag)
 {
 	if (fileName == NULL)
 		return false;
-	if (fromTag && (fileName[0] == '\\' || fileName[0] == '/') && (fileName[1] == '\\' || fileName[1] == '/'))
+	if (fromTag && CTools::isNetworkPath(fileName)) // (a mapped network drive too, 4.0.4.9)
 		return false;
 	FILE *Stream;
 	errno = 0;

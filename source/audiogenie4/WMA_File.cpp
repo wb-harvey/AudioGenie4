@@ -306,6 +306,22 @@ bool CWMA_File::SaveToFile(LPCWSTR FileName)
 
 		newHeader.Clear();
 		header.save(&newHeader);
+		{
+			// 4.0.4.9: the File Properties object's File Size (offset 40 in the object) is the new ASF size; it kept
+			// the old one after a rebuild (4.0.4.8 and earlier)
+			static const BYTE FILE_PROPERTIES_GUID[16] = { 0xA1, 0xDC, 0xAB, 0x8C, 0x47, 0xA9, 0xCF, 0x11, 0x8E, 0xE4, 0x00, 0xC0, 0x0C, 0x20, 0x53, 0x65 };
+			size_t len = newHeader.GetLength();
+			for (size_t pos = 30; pos + 48 <= len; pos++)
+			{
+				if (memcmp(newHeader.m_pData + pos, FILE_PROPERTIES_GUID, 16) == 0)
+				{
+					unsigned __int64 asfSize = (unsigned __int64)(fileLen - DataPosition) + len;
+					for (int b = 0; b < 8; b++)
+						newHeader.m_pData[pos + 40 + b] = (BYTE)(asfSize >> (8 * b));
+					break;
+				}
+			}
+		}
 		FILE *Destination;
 		CAtlString NewFileName(FileName);
 		NewFileName+=TILDE;

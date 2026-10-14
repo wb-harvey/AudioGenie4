@@ -101,7 +101,7 @@ void CLyrics::SetTagItem(char ID[], long Pos, long DataSize)
 	{
 		if (memcmp(ID, FIELD_LIST[Iterator], 3) == 0)
 		{
-			FField[Iterator] = Data.GetStringAt(Pos, DataSize);
+			FField[Iterator] = Data.GetAnsiStringAt(Pos, DataSize); // 4.0.4.9: in the code page it was written in
 			break;
 		}
 	}

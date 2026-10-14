@@ -92,6 +92,7 @@ BYTE GetFormat(LPCWSTR FileName)
 			else if ( (endung.CompareNoCase(_T(".MP3")) == 0  || 
 				endung.CompareNoCase(_T(".MP2")) == 0  ||
 				endung.CompareNoCase(_T(".MP1")) == 0  ||
+				endung.CompareNoCase(_T(".MSF")) == 0  || // 4.0.4.9: as AUDIOAnalyzeFileW (MPEGSet*W refused .MSF files)
 				endung.CompareNoCase(_T("MP3~")) == 0))
 			{
 				CMPEGAudio tmpMpeg;

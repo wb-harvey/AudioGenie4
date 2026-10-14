@@ -103,8 +103,7 @@ CFlacCover::CFlacCover(CBlob *tmpData)
 		_pictureLink = link.ConvertToUnicodeString(TEXT_ENCODED_ANSI);
 		// The link comes from the file: a network path (\\server\..., //server/...) isn't opened (opening it sent
 		// the user's Windows credentials to that server), and a file over 64 MB isn't read (4.0.4.6 and earlier)
-		bool network = _pictureLink.GetLength() >= 2 &&
-			(_pictureLink[0] == L'\\' || _pictureLink[0] == L'/') && (_pictureLink[1] == L'\\' || _pictureLink[1] == L'/');
+		bool network = CTools::isNetworkPath(_pictureLink); // (a mapped network drive too, 4.0.4.9)
 		FILE *tmpSource;
 		if (!network && _pictureLink.GetLength() > 0 && (tmpSource = _wfsopen(_pictureLink, READ_ONLY, _SH_DENYNO)) != NULL)
 		{

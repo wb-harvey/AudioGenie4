@@ -749,6 +749,23 @@ bool CMP4::SaveToFile(LPCWSTR FileName)
 				cSTCO(offsets)->move(delta, Destination);
 			}
 		}
+		// 4.0.4.9: keep an ID3v1 tag at the end: the atoms were read up to it, and the rebuilt file ended without it
+		// (an in-place save kept it, 4.0.4.8 and earlier)
+		if (copied && CTools::ID3v1Size == 128 && fileSize >= 128)
+		{
+			CBlob v1;
+			if (_fseeki64(Source, fileSize - 128, SEEK_SET) != 0)
+				copied = false;
+			else
+			{
+				v1.FileRead(128, Source);
+				if (v1.GetLength() != 128)
+					copied = false;
+				else if (memcmp(v1.m_pData, "TAG", 3) == 0 &&
+					(_fseeki64(Destination, 0, SEEK_END) != 0 || v1.FileWrite(128, Destination) != 128))
+					copied = false;
+			}
+		}
 		if (fflush(Destination) != 0 || ferror(Destination))
 			copied = false;
 		if (fclose(Destination) != 0)

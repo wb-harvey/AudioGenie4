@@ -46,15 +46,32 @@ CAtlString CID3F_Chapter::getID()
 	decode();
 	return _ID;
 }
+// 4.0.4.9: the title and description are the TIT2/TIT3 sub-frames when there are any: a TIT2 set with
+// ID3V2SetTextSubFrameW was saved, but the title read was still the old one (4.0.4.8 and earlier)
+static bool subFrameText(CAtlArray<CID3_Frame*>& frames, u32 id, CAtlString& text)
+{
+	for (size_t i = 0; i < frames.GetCount(); i++)
+	{
+		CID3F_T000 *t = dynamic_cast<CID3F_T000*>(frames[i]);
+		if (t != NULL && frames[i]->_frameID == id)
+		{
+			text = t->getText();
+			return true;
+		}
+	}
+	return false;
+}
 CAtlString CID3F_Chapter::getTitle()
 {
 	decode();
-	return _title;
+	CAtlString text;
+	return subFrameText(_frames, F_TIT2, text) ? text : _title;
 }
 CAtlString CID3F_Chapter::getDescription()
 {
 	decode();
-	return _description;
+	CAtlString text;
+	return subFrameText(_frames, F_TIT3, text) ? text : _description;
 }
 // 4.0.4.7: decode first, and the chapter is rebuilt: a change made after a first save was not written, and a change
 // to a chapter not decoded yet was overwritten by its decode (4.0.4.6 and earlier)

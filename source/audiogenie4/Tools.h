@@ -137,6 +137,25 @@ public:
 	static CAtlString GetLastErrorText() { return lastErrorText; };
 	static int getLastError() { return lastError; };
 	static BSTR GetEmptyBSTR() { return CAtlString().AllocSysString(); };
+	// 4.0.4.9: a path on another machine: \\server\..., //server/..., or (relative paths resolved first) a drive
+	// letter mapped to a network share. A picture link read from a tag isn't opened there (Windows sends the user's
+	// credentials to the server); 4.0.4.7/4.0.4.8 caught only the \\server form.
+	static bool isNetworkPath(LPCWSTR path)
+	{
+		if (path == NULL || path[0] == 0)
+			return false;
+		WCHAR full[MAX_PATH + 1];
+		DWORD n = GetFullPathNameW(path, MAX_PATH + 1, full, NULL);
+		LPCWSTR p = (n > 0 && n <= MAX_PATH) ? full : path;
+		if ((p[0] == L'\\' || p[0] == L'/') && (p[1] == L'\\' || p[1] == L'/'))
+			return true;
+		if (p[0] != 0 && p[1] == L':')
+		{
+			WCHAR root[4] = { p[0], L':', L'\\', 0 };
+			return GetDriveTypeW(root) == DRIVE_REMOTE;
+		}
+		return false;
+	};
 	static void setConfigValue(long key, long value);
 	static long getConfigValue(long key);
 	static BYTE ID3V2oldTagVersion, ID3V2newTagVersion, ID3V2defaultEncodingID, ID3V2Flags;

@@ -100,16 +100,18 @@ bool CID3V1TagInfo::ReadFromFile(FILE *Stream)
   Year = st.Mid(90, 4).TrimRight(); 
   Comment = st.Mid(94, 30).TrimRight(); 
   */
-  Title = tmp->GetStringAt(6, 30).TrimRight();
-  Artist = tmp->GetStringAt(36, 30).TrimRight();
-  Album = tmp->GetStringAt(66, 30).TrimRight();
-  Year = tmp->GetStringAt(96, 4).TrimRight();
-  Comment = tmp->GetStringAt(100, 30).TrimRight();
+  // 4.0.4.9: each field up to its first NUL, in the code page it was written in (GetAnsiStringAt); the NUL padding
+  // was part of the text, and a v1.1 comment ended with the track number (4.0.4.8 and earlier)
+  Title = tmp->GetAnsiStringAt(6, 30).TrimRight();
+  Artist = tmp->GetAnsiStringAt(36, 30).TrimRight();
+  Album = tmp->GetAnsiStringAt(66, 30).TrimRight();
+  Year = tmp->GetAnsiStringAt(96, 4).TrimRight();
   if ((tmp->GetAt(128) == 0 && tmp->GetAt(129) != 0) ||
       (tmp->GetAt(128) == 32 && tmp->GetAt(129) != 32))
     Track = tmp->GetAt(129);
   else
     Track = 0;
+  Comment = tmp->GetAnsiStringAt(100, (Track != 0) ? 28 : 30).TrimRight();
 
   Genre = tmp->GetAt(130);
   _exists = true;

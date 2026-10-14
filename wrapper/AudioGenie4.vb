@@ -297,7 +297,8 @@ Namespace AudioGenie
             ' every string the DLL returns is a new BSTR (AllocSysString): read it, then free it (each getter call
             ' leaked one before)
             Try
-                Dim result As String = Marshal.PtrToStringBSTR(ptr)
+                ' up to the first NUL, as before: some getters (ID3v1 up to 4.0.4.8) return their field's padding too
+                Dim result As String = Marshal.PtrToStringUni(ptr)
                 If result Is Nothing Then Return String.Empty
                 Return result
             Finally

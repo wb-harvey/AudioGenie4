@@ -400,6 +400,33 @@ static UINT ansiCodePage(const BYTE* s)
 	return 1252;
 }
 
+// 4.0.4.9: a text without encoding (ID3v1, Lyrics3) in nLength bytes: up to its first NUL, in the code page its bytes
+// were written in (ansiCodePage). GetStringAt converted every byte with the PC's code page, the NUL padding of an
+// ID3v1 field included (a .NET caller reading the whole string got it), and Hebrew from a Hebrew PC read as
+// accented Latin on another one (4.0.4.8 and earlier).
+CAtlString CBlob::GetAnsiStringAt(size_t nPos, size_t nLength)
+{
+	if (m_CurrentLength == 0 || nPos >= m_CurrentLength)
+		return EMPTY;
+	if (nPos + nLength > m_CurrentLength)
+		nLength = m_CurrentLength - nPos;
+	size_t n = 0;
+	while (n < nLength && m_pData[nPos + n] != 0)
+		n++;
+	if (n == 0)
+		return EMPTY;
+	CStringA bytes((LPCSTR)(m_pData + nPos), (int)n);
+	UINT cp = ansiCodePage((const BYTE*)(LPCSTR)bytes);
+	int w = MultiByteToWideChar(cp, 0, bytes, (int)n, NULL, 0);
+	CAtlString result;
+	if (w > 0)
+	{
+		MultiByteToWideChar(cp, 0, bytes, (int)n, result.GetBuffer(w), w);
+		result.ReleaseBuffer(w);
+	}
+	return result;
+}
+
 CAtlString CBlob::getNextString(BYTE encoding, int& startPos)
 {
 	ATLASSERT(encoding >= 0 && encoding <= 4);

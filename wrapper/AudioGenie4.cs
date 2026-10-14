@@ -302,7 +302,8 @@ namespace AudioGenie
             // leaked one before)
             try
             {
-                return System.Runtime.InteropServices.Marshal.PtrToStringBSTR(ptr) ?? string.Empty;
+                // up to the first NUL, as before: some getters (ID3v1 up to 4.0.4.8) return their field's padding too
+                return System.Runtime.InteropServices.Marshal.PtrToStringUni(ptr) ?? string.Empty;
             }
             finally
             {
