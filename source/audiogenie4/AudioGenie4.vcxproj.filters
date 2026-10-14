@@ -556,6 +556,9 @@
     <ClInclude Include="targetver.h">
       <Filter>Headerdateien</Filter>
     </ClInclude>
+    <ClInclude Include="LongPath.h">
+      <Filter>Headerdateien</Filter>
+    </ClInclude>
     <ClInclude Include="Tools.h">
       <Filter>Headerdateien</Filter>
     </ClInclude>

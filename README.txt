@@ -28,6 +28,11 @@ Version 4.0.4.9
 - ID3V2GetAddendumTitleW/DescriptionW read the chapter's TIT2/TIT3 sub-frames (a title set with
   ID3V2SetTextSubFrameW read as the old one).
 - MPEGSetCopyrightedW/OriginalW/PrivateW accept .MSF files, as AUDIOAnalyzeFileW does.
+- File names of any length: a path of 246 characters or more is passed to Windows in its extended form (\\?\C:\...,
+  \\?\UNC\server\...). AUDIOAnalyzeFileW returned 0 for a path of MAX_PATH (260) or more and every save failed
+  (error 209). Shorter paths are passed as before.
+- WMA title, author, copyright, description and rating are cut at 32766 characters, the most their 16-bit length
+  holds: a longer one wrapped the length around and the fields after it were read from inside it.
 Wrappers: SafeStr reads up to the first NUL again (PtrToStringUni) and still frees the string.
 
 Version 4.0.4.8

@@ -144,9 +144,19 @@ public:
 	{
 		if (path == NULL || path[0] == 0)
 			return false;
-		WCHAR full[MAX_PATH + 1];
-		DWORD n = GetFullPathNameW(path, MAX_PATH + 1, full, NULL);
-		LPCWSTR p = (n > 0 && n <= MAX_PATH) ? full : path;
+		// the extended forms: \\?\UNC\server\... is a network path, \\?\C:\... is checked by its drive
+		if (wcsncmp(path, L"\\\\?\\UNC\\", 8) == 0)
+			return true;
+		if (wcsncmp(path, L"\\\\?\\", 4) == 0 || wcsncmp(path, L"\\\\.\\", 4) == 0)
+			path += 4;
+		CAtlStringW full;
+		DWORD n = GetFullPathNameW(path, 0, NULL, NULL); // any length (a fixed MAX_PATH buffer failed on long paths)
+		if (n > 0)
+		{
+			DWORD got = GetFullPathNameW(path, n, full.GetBuffer(n), NULL);
+			full.ReleaseBuffer((got > 0 && got < n) ? (int)got : 0);
+		}
+		LPCWSTR p = full.IsEmpty() ? path : (LPCWSTR)full;
 		if ((p[0] == L'\\' || p[0] == L'/') && (p[1] == L'\\' || p[1] == L'/'))
 			return true;
 		if (p[0] != 0 && p[1] == L':')
