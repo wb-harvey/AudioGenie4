@@ -29,7 +29,8 @@ class CMP4Atom
 public:
 	CMP4Atom(void);
 	CMP4Atom(unsigned int frameID);
-	~CMP4Atom(void);
+	virtual ~CMP4Atom(void); // 4.0.4.8: virtual - atoms are deleted through CMP4Atom*, and a subclass's own members
+	                          // (the mdat's source file name, set on every save) leaked (4.0.4.7 and earlier)
 	virtual CMP4Atom* copy();
 	virtual CMP4Atom* find(CAtlString atomID);
 	void init(unsigned int frameID);

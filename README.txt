@@ -17,6 +17,14 @@ This library is far superior to TagLibSharp when dealing with ID3v1, ID3v2.3, ID
 TagLibSharp uses a dangerous anti-pattern of metadata consolidation and responds to requests for tag data by giving results for other tags.
 This regularly results in garbage tag data or file corruption because different tags use different encodings (ANSI, UTF-8, UTF-16). 
 
+Version 4.0.4.8
+Stability check of 4.0.4.7 by fuzzing, x64 and x86: 60,000 damaged files (every format, 1 to 8 changes each,
+analyzed, every getter read, saved) and 13,500 runs of 120 random API calls with hostile arguments (NULL and
+300 K strings, out-of-range indexes and IDs, short buffers): no crash or hang. One defect found and fixed:
+- M4A/MP4: every save leaked about 1.4 KB (the atom classes had no virtual destructor, so an atom deleted through
+  its base class kept its own members, such as the mdat's source file name). Memory now stays flat over thousands
+  of saves in every format; no file handles are left open.
+
 Version 4.0.4.7
 A review of the whole source. Saves that could lose audio, tags or the file, and crashes on damaged files:
 All formats
