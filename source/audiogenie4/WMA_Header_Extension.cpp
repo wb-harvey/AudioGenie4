@@ -30,7 +30,7 @@ CWMA_Header_Extension::CWMA_Header_Extension(void)
 	reserved2 = 0;
 }
 
-// 4.0.4.9: a new Header Extension for a file without one: Reserved Field 1 is ASF_Reserved_1 and Field 2 is 6, as
+// 4.0.5: a new Header Extension for a file without one: Reserved Field 1 is ASF_Reserved_1 and Field 2 is 6, as
 // the ASF specification requires
 void CWMA_Header_Extension::initNew()
 {

@@ -2,10 +2,10 @@
    This file is part of the AudioGenie Library (LGPL 2.1, see LICENSE.txt).
 */
 /* -------------------------------------------------------------------------- */
-/* LongPath.h: file names of any length (4.0.4.9)                             */
+/* LongPath.h: file names of any length (4.0.5)                             */
 /* -------------------------------------------------------------------------- */
 // A path of MAX_PATH (260) characters or more couldn't be opened: AUDIOAnalyzeFileW returned 0 and every save
-// failed (4.0.4.9 before this). The file functions the library uses are redirected here, and a long path is passed
+// failed (4.0.5 and earlier). The file functions the library uses are redirected here, and a long path is passed
 // to Windows in its extended form (\\?\C:\... or \\?\UNC\server\share\...), which has no length limit. A short
 // path is passed as it is, so nothing changes for it. Included at the end of StdAfx.h, after the headers that
 // declare these functions, so every source file uses the redirection.

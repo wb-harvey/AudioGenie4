@@ -95,9 +95,9 @@ bool CWMA_ContentDescription::load(FILE *Stream, size_t maxLen)
 	_mustBuild = true;
 	return true;
 }
-// 4.0.4.9: a field's length is 16 bits, in bytes with its terminating NUL: a text over 32766 characters is cut
+// 4.0.5: a field's length is 16 bits, in bytes with its terminating NUL: a text over 32766 characters is cut
 // there (not inside a surrogate pair). Its length wrapped around (a 33000-character title was written as 233), and
-// the fields after it were read from inside it (4.0.4.9 before this).
+// the fields after it were read from inside it (4.0.5 and earlier).
 static void FitField(CAtlString& text)
 {
 	const int maxChars = 32766;

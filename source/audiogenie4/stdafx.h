@@ -39,5 +39,5 @@
 
 using namespace ATL;
 
-// 4.0.4.9: file names of any length (the file functions are redirected, see LongPath.h)
+// 4.0.5: file names of any length (the file functions are redirected, see LongPath.h)
 #include "LongPath.h"

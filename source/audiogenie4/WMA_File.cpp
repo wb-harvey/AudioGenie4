@@ -240,8 +240,8 @@ bool CWMA_File::SaveToFile(LPCWSTR FileName)
 	}
 	else
 	{
-		// 4.0.4.9: no Header Extension: Metadata Library items (values over 64 KB, ...) get one below; they were
-		// dropped (4.0.4.9 before this)
+		// 4.0.5: no Header Extension: Metadata Library items (values over 64 KB, ...) get one below; they were
+		// dropped (4.0.5 and earlier)
 		newMetas = new CWMA_MetadataLibrary();
 		newMetas->buildData();
 		if (newMetas->getData()->GetLength() == 0)
@@ -290,7 +290,7 @@ bool CWMA_File::SaveToFile(LPCWSTR FileName)
 	}
 	else if (newMetas != NULL)
 	{
-		// 4.0.4.9: a new Header Extension holds the Metadata Library
+		// 4.0.5: a new Header Extension holds the Metadata Library
 		CWMA_Header_Extension* he = new CWMA_Header_Extension();
 		he->initNew();
 		he->replaceObject(newMetas);
