@@ -125,6 +125,11 @@ static const unsigned int CRC_TABLE[] = {
 		bool HeadersRead;                               /* Both packets read and they end their last page */
 		long HeaderEndPos;                              /* End of the page that completes the setup packet */
 		int LastHeaderPageNumber;                       /* Its page sequence number */
+		/* 4.0.6: Ogg Opus (RFC 7845): OpusHead, then OpusTags (the same comments after an 8-byte magic, no framing
+		   bit) and no setup packet; granule positions count 48 kHz samples from before the pre-skip */
+		bool FIsOpus;
+		int FPreSkip;                                   /* Samples at 48 kHz the decoder drops at the start */
+		int FInputSampleRate;                           /* The rate of the source that was encoded (information only) */
 	public:
 		/* Public declarations */
 		COggVorbis();
@@ -141,4 +146,6 @@ static const unsigned int CRC_TABLE[] = {
 		long GetBitRate()        { return FGetBitRate(); };     /* Average bit rate */
 		bool IsValid()           { return FIsValid(); };        /* True if file valid */  
 		long GetFirstAudioPosition() { return firstAudioPos; };
+		bool IsOpus()            { return FIsOpus; };           /* 4.0.6: Ogg Opus rather than Ogg Vorbis */
+		int GetInputSampleRate() { return FInputSampleRate; };
 	};

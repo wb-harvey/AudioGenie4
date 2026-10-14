@@ -381,6 +381,7 @@ MPPGetStreamVersionW
 OGGGetAlbumW
 OGGGetArtistW
 OGGGetBitRateNominalW
+OGGGetCodecW
 OGGGetCommentW
 OGGGetContactW
 OGGGetCopyrightW

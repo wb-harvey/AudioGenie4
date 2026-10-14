@@ -1104,6 +1104,8 @@ namespace AudioGenie
         [LibraryImport("AudioGenie4.dll", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
         private static partial IntPtr OGGGetVersionW();
         [LibraryImport("AudioGenie4.dll", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
+        private static partial IntPtr OGGGetCodecW();
+        [LibraryImport("AudioGenie4.dll", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
         private static partial short OGGRemoveTagFromFileW(string FileName);
         [LibraryImport("AudioGenie4.dll", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
         private static partial short OGGRemoveTagW();
@@ -2074,6 +2076,11 @@ namespace AudioGenie
         {
             get { return SafeStr(OGGGetVendorW()); }
             set { OGGSetVendorW(value); }
+        }
+        /// <summary>"Vorbis" or "Opus" for the Ogg file analyzed last (AudioGenie4 4.0.6)</summary>
+        public static string OGGCodec
+        {
+            get { return SafeStr(OGGGetCodecW()); }
         }
         public static string OGGVersion
         {

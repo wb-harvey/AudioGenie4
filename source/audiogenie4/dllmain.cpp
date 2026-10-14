@@ -2658,9 +2658,25 @@ extern "C" void __stdcall OGGSetVendorW(LPCWSTR textString)
 * @returnD BSTR Version
 * @returnE BSTR version
 */
-extern "C" BSTR __stdcall OGGGetVersionW() 
+extern "C" BSTR __stdcall OGGGetVersionW()
 {
 	return ogg.GetUserItem(VORBIS_VERSION).AllocSysString();
+}
+
+/**
+* Methode: OGGGetCodecW
+* @link OGG
+* @since 4.0.6
+* Beschreibung deutsch: liefert den Codec der Ogg-Datei: "Vorbis" oder "Opus"
+* Beschreibung english: get the codec of the Ogg file: "Vorbis" or "Opus" (empty when the last file analyzed is no Ogg file)
+* @returnD BSTR Codec
+* @returnE BSTR codec
+*/
+extern "C" BSTR __stdcall OGGGetCodecW()
+{
+	if (Format != AUDIO_FORMAT_OGGVORBIS)
+		return CTools::instance().GetEmptyBSTR();
+	return CAtlString(ogg.IsOpus() ? _T("Opus") : _T("Vorbis")).AllocSysString();
 }
 
 /**

@@ -17,6 +17,15 @@ This library is far superior to TagLibSharp when dealing with ID3v1, ID3v2.3, ID
 TagLibSharp uses a dangerous anti-pattern of metadata consolidation and responds to requests for tag data by giving results for other tags.
 This regularly results in garbage tag data or file corruption because different tags use different encodings (ANSI, UTF-8, UTF-16). 
 
+Version 4.0.6
+- Ogg Opus files (.opus, or .ogg holding Opus) are read and saved like Ogg Vorbis: AUDIOAnalyzeFileW returns 6 (OGG),
+  the OGG and AUDIO tag functions read and write their comments (OpusTags, of any size, on as many pages as they
+  need; the audio pages and the OpusHead are left as they are), the duration leaves out the pre-skip and the
+  sample rate is 48000, as Opus decodes. They read as no file at all before.
+- OGGGetCodecW (new): "Vorbis" or "Opus" for the Ogg file analyzed last, empty for any other format. Wrappers:
+  OGGCodec.
+- Ogg Vorbis durations keep their fraction of a second (an integer division cut them to whole seconds).
+
 Version 4.0.5
 - File names of any length: a path of 246 characters or more is passed to Windows in its extended form (\\?\C:\...,
   \\?\UNC\server\...). AUDIOAnalyzeFileW returned 0 for a path of MAX_PATH (260) or more and every save failed

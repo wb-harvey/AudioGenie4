@@ -29,6 +29,10 @@ static const char VORBIS_PARAMETERS_ID[] = { 1 , 'v','o','r','b','i','s' };
 /* Vorbis tag frame ID */
 static const char VORBIS_TAG_ID[] = { 3, 'v','o','r','b','i','s' };
 
+/* 4.0.6: Ogg Opus identification and comment packet IDs (RFC 7845) */
+static const char OPUS_HEAD_ID[] = { 'O','p','u','s','H','e','a','d' };
+static const char OPUS_TAGS_ID[] = { 'O','p','u','s','T','a','g','s' };
+
 class CVorbisHeader
 {
 public:

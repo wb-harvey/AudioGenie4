@@ -36,6 +36,9 @@ COggVorbis::COggVorbis()
 	HeadersRead = false;
 	HeaderEndPos = 0;
 	LastHeaderPageNumber = 0;
+	FIsOpus = false;
+	FPreSkip = 0;
+	FInputSampleRate = 0;
 }
 
 COggVorbis::~COggVorbis()
@@ -95,9 +98,29 @@ bool COggVorbis::GetInfo(FILE *Source, bool withComments)
 	if (FPage.ReadFromFile(Source))
 	{
 		fseek(Source, CTools::ID3v2Size + FPage.Segments + 27, SEEK_SET);
-		/* Read Vorbis parameter header */
-		Parameters.ReadFromFile(Source);
-		if (memcmp(Parameters.ID, VORBIS_PARAMETERS_ID, 7) == 0)
+		// 4.0.6: an Opus identification header (RFC 7845: "OpusHead", version, channels, pre-skip, input sample
+		// rate, output gain, mapping family), or a Vorbis one. Ogg Opus read as no file at all (4.0.5 and earlier).
+		CBlob opusHead;
+		opusHead.FileRead(19, Source);
+		FIsOpus = opusHead.GetLength() == 19 && memcmp(opusHead.m_pData, OPUS_HEAD_ID, 8) == 0 &&
+			(opusHead.m_pData[8] & 0xF0) == 0 && opusHead.m_pData[9] > 0;
+		FPreSkip = 0;
+		FInputSampleRate = 0;
+		if (FIsOpus)
+		{
+			Parameters.Reset();
+			Parameters.ChannelMode = opusHead.m_pData[9];
+			Parameters.SampleRate = 48000;                // Opus decodes at 48 kHz; granule positions count it
+			FPreSkip = opusHead.m_pData[10] | (opusHead.m_pData[11] << 8);
+			FInputSampleRate = opusHead.GetR4B(12);
+		}
+		else
+		{
+			/* Read Vorbis parameter header */
+			fseek(Source, CTools::ID3v2Size + FPage.Segments + 27, SEEK_SET);
+			Parameters.ReadFromFile(Source);
+		}
+		if (FIsOpus || memcmp(Parameters.ID, VORBIS_PARAMETERS_ID, 7) == 0)
 		{
 			// The second page starts where the identification packet's page ends
 			long firstPageData = 0;
@@ -110,7 +133,9 @@ bool COggVorbis::GetInfo(FILE *Source, bool withComments)
 			HeadersRead = ReadHeaderPackets(Source);
 			if (HeadersRead)
 			{
-				if (withComments && CommentPacket.GetLength() >= 7 && memcmp(CommentPacket.m_pData, VORBIS_TAG_ID, 7) == 0)
+				if (withComments && FIsOpus && CommentPacket.GetLength() >= 8 && memcmp(CommentPacket.m_pData, OPUS_TAGS_ID, 8) == 0)
+					AnalyzeVorbisComments(CommentPacket, 8);
+				else if (withComments && !FIsOpus && CommentPacket.GetLength() >= 7 && memcmp(CommentPacket.m_pData, VORBIS_TAG_ID, 7) == 0)
 					AnalyzeVorbisComments(CommentPacket, 7);
 				TagEndPos = HeaderEndPos;
 				firstAudioPos = HeaderEndPos;
@@ -121,7 +146,7 @@ bool COggVorbis::GetInfo(FILE *Source, bool withComments)
 				// be read (the file is not saved, see SaveTag)
 				fseek(Source, SPagePos + SPage.Segments + 27, SEEK_SET);
 				fread(Tag.ID, 1, 7, Source);
-				if (memcmp(&Tag.ID, VORBIS_TAG_ID, 7) == 0 && withComments)
+				if (!FIsOpus && memcmp(&Tag.ID, VORBIS_TAG_ID, 7) == 0 && withComments)
 					ReadTag(Source);
 			}
 			// Get total number of samples
@@ -138,19 +163,20 @@ bool COggVorbis::ReadHeaderPackets(FILE *Source)
 {
 	/* Reads the comment and setup packets from the pages after the identification page. False when they can't be
 	   replaced on their own: a page of another logical stream in between, audio on the setup packet's last page, or
-	   a damaged or cut-off page */
+	   a damaged or cut-off page. Opus has no setup packet: its comment packet (OpusTags) ends the header. */
 	CommentPacket.Clear();
 	SetupPacket.Clear();
 	fseek(Source, SPagePos, SEEK_SET);
 	int packet = 2;                                   // 2 = comment, 3 = setup
-	for (int pages = 0; packet <= 3; pages++)
+	const int lastPacket = FIsOpus ? 2 : 3;
+	for (int pages = 0; packet <= lastPacket; pages++)
 	{
 		COGGHeader Page;
 		if (pages >= 4096 || !Page.ReadFromFile(Source) || Page.Serial != FPage.Serial)
 			return false;
 		for (int i = 0; i < Page.Segments; i++)
 		{
-			if (packet > 3)
+			if (packet > lastPacket)
 				return false;
 			BYTE len = Page.LacingValues[i];
 			CBlob &packetData = (packet == 2) ? CommentPacket : SetupPacket;
@@ -174,6 +200,12 @@ bool COggVorbis::ReadHeaderPackets(FILE *Source)
 void COggVorbis::BuildTag()
 {
 	Data.Clear();
+	if (FIsOpus)
+	{
+		Data.AddMemory(OPUS_TAGS_ID, 8);              // 4.0.6: OpusTags has no framing bit
+		BuildVorbisComments(Data);
+		return;
+	}
 	Data.AddMemory(VORBIS_TAG_ID, 7);
 	BuildVorbisComments(Data);
 	Data.AddValue(1);                                 // framing bit: the packet is written whole
@@ -252,8 +284,9 @@ bool COggVorbis::RebuildFile(LPCWSTR FileName)
 	_fseeki64(Source, 0, SEEK_SET);
 	bool ok = sourceSize >= HeaderEndPos && CopyBytes(Source, Destination, SPagePos);
 
-	// 2. The comment and setup packets on new pages
+	// 2. The comment and setup packets on new pages (Opus: the comment packet alone)
 	CBlob *packets[2] = { &Data, &SetupPacket };
+	const int packetCount = FIsOpus ? 1 : 2;
 	int pageNumber = SPage.PageNumber;
 	__int64 headerBytes = 0;
 	BYTE lacing[255];
@@ -261,7 +294,7 @@ bool COggVorbis::RebuildFile(LPCWSTR FileName)
 	CBlob body;
 	bool startsContinued = false;                     // the page goes on with a packet begun on the page before
 	bool packetEnds = false;                          // a packet ends on the page
-	for (int p = 0; p < 2 && ok; p++)
+	for (int p = 0; p < packetCount && ok; p++)
 	{
 		size_t length = packets[p]->GetLength();
 		size_t offset = 0;
@@ -275,7 +308,7 @@ bool COggVorbis::RebuildFile(LPCWSTR FileName)
 			bool done = segment < 255;
 			if (done)
 				packetEnds = true;
-			bool last = done && p == 1;
+			bool last = done && p == packetCount - 1;
 			if (segments == 255 || last)
 			{
 				CBlob page;
@@ -407,6 +440,9 @@ void COggVorbis::ResetData()
 	HeadersRead = false;
 	HeaderEndPos = 0;
 	LastHeaderPageNumber = 0;
+	FIsOpus = false;
+	FPreSkip = 0;
+	FInputSampleRate = 0;
 	CVorbisComment::ResetData();
 }
 
@@ -417,7 +453,12 @@ float COggVorbis::FGetDuration()
 	/* Calculate duration time */
 	if (FSamples > 0)
 		if (FSampleRate > 0)
-			return (float) (FSamples / FSampleRate);
+		{
+			// 4.0.6: in seconds with their fraction (an integer division cut it to whole seconds), and for Opus
+			// without the pre-skip, which the granule positions count
+			long samples = FIsOpus ? FSamples - FPreSkip : FSamples;
+			return samples > 0 ? (float)((double)samples / FSampleRate) : 0.0f;
+		}
 		else
 			return 0.0f;
 	else if (FBitRateNominal > 0 && FChannelModeID > 0)

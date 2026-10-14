@@ -1530,6 +1530,9 @@ Namespace AudioGenie
         <DllImport(DLL, EntryPoint:="OGGGetVersionW", CharSet:=CharSet.Unicode, SetLastError:=True)>
         Private Shared Function OGGGetVersionW() As IntPtr
         End Function
+        <DllImport(DLL, EntryPoint:="OGGGetCodecW", CharSet:=CharSet.Unicode, SetLastError:=True)>
+        Private Shared Function OGGGetCodecW() As IntPtr
+        End Function
         <DllImport(DLL, EntryPoint:="OGGRemoveTagFromFileW", CharSet:=CharSet.Unicode, SetLastError:=True)>
         Private Shared Function OGGRemoveTagFromFileW(FileName As String) As Short
         End Function
@@ -2573,6 +2576,12 @@ Namespace AudioGenie
 #End Region
 
 #Region "OGG Properties"
+        ''' <summary>Vorbis or Opus for the Ogg file analyzed last (AudioGenie4 4.0.6)</summary>
+        Public Shared ReadOnly Property OGGCodec As String
+            Get
+                Return SafeStr(OGGGetCodecW())
+            End Get
+        End Property
         Public Shared Property OGGAlbum As String
             Get
                 Return SafeStr(OGGGetAlbumW())
