@@ -36,8 +36,9 @@ CMP4_Container::CMP4_Container(u32 frameID)
 }
 CMP4Atom* CMP4_Container::copy()
 {
-	CMP4Atom *atom;
+	CMP4_Container *atom;
 	atom = new CMP4_Container(getFrameID());
+	atom->_noFullBox = _noFullBox;
 	atom->_blob.Clear();
 	atom->_blob.AddBlob(_blob);
 	atom->_parent = _parent;
@@ -54,6 +55,9 @@ CMP4Atom* CMP4_Container::copy()
 void CMP4_Container::init(u32 frameID)
 {
 	setFrameID(frameID);
+	_noFullBox = false;
+	_offset = 0;
+	_size = 0;
 	_children.SetCount(0, 10);
 	setParent(EMPTY);
 }
@@ -179,8 +183,30 @@ void CMP4_Container::load(FILE *Stream, u32 offset, u32 size)
 	_size = size;
 	_offset = offset;
 	u32 endPos = _offset + _size;
+	CMP4_AtomFactory *factory = CMP4_AtomFactory::instance();
+	// an atom inside another one (not a top-level one): stopping early there drops the rest of its parent on save
+	bool nested = factory->ebene > 0;
+	// nesting is capped: hostile nesting recursed until the stack overflowed (4.0.4.6 and earlier)
+	if (factory->ebene > 2 * MP4_MAX_NESTING)
+	{
+		CMP4_AtomFactory::loadError = true;
+		return;
+	}
 	if (getFrameID() == MP4_META)
-		_offset+=4;
+	{
+		// A QuickTime-style meta has no version/flags: its hdlr starts right after the header. Skipping 4 bytes
+		// there misparsed it, and saving wrote the contents back damaged (4.0.4.6 and earlier).
+		_noFullBox = false;
+		if (_size >= 8 && fseek(Stream, _offset, SEEK_SET) == 0)
+		{
+			CBlob peek(8);
+			peek.FileRead(8, Stream);
+			if (peek.GetLength() == 8 && (u32)peek.Get4B(4) == MP4_HDLR)
+				_noFullBox = true;
+		}
+		if (!_noFullBox)
+			_offset+=4;
+	}
 	CAtlString parent(getPath());
 	CBlob header(8);
 	long nextReadPos = 0;
@@ -190,23 +216,43 @@ void CMP4_Container::load(FILE *Stream, u32 offset, u32 size)
 	CMP4Atom *atom;
 	while (_offset < endPos)
 	{
-		fseek(Stream, _offset, SEEK_SET);
+		// fewer than 8 bytes left is no atom (QuickTime ends udta with 4 zero bytes)
+		if (endPos - _offset < 8)
+			return;
+		if (fseek(Stream, _offset, SEEK_SET) != 0)
+		{
+			CMP4_AtomFactory::loadError = true;
+			return;
+		}
 		header.FileRead(8, Stream);
 		if (header.GetLength() < 8)
+		{
+			if (nested)
+				CMP4_AtomFactory::loadError = true;
 			return;
+		}
 		atomSize = header.Get4B(0);
 		atomID = header.Get4B(4);
-		if (atomSize > endPos || _offset + atomSize > endPos || atomID == 0)
+		if (atomSize == 0 && atomID == 0) // zero fill: the end
 			return;
-		if (atomSize == 0) // This is the last atom
-			atomSize = CTools::FileSize - _offset + 8;
-		dataSize = atomSize - 8;
 		if (atomSize == 1) // Extended Size in 64 bit isn't supported yet
 		{
 			CTools::instance().setLastError(ERR_FRAME_TOO_BIG);
+			CMP4_AtomFactory::loadError = true;
 			return;
 		}
-		atom = CMP4_AtomFactory::instance()->createAtom(atomID);
+		// size 0: the atom runs to the end of its parent (it ran 8 bytes past the end of the file)
+		if (atomSize == 0)
+			atomSize = endPos - _offset;
+		// a size of 2 to 7 wrapped dataSize around to about 4 GB (4.0.4.6 and earlier)
+		if (atomSize < 8 || atomSize > endPos - _offset || atomID == 0)
+		{
+			if (nested)
+				CMP4_AtomFactory::loadError = true;
+			return;
+		}
+		dataSize = atomSize - 8;
+		atom = factory->createAtom(atomID);
 		CMP4_AtomFactory::instance()->ebene+=2;
 		_children.Add(atom);
 		atom->setParent(parent);
@@ -225,7 +271,7 @@ void CMP4_Container::load(FILE *Stream, u32 offset, u32 size)
 long CMP4_Container::getSize()
 {
 	long size = 8;
-	if (getFrameID() == MP4_META)
+	if (getFrameID() == MP4_META && !_noFullBox)
 		size+=4;
 
 	size_t counts = _children.GetCount();
@@ -293,7 +339,7 @@ void CMP4_Container::save(FILE *stream)
 	CBlob tmp(8);
 	tmp.Add4B(frameSize);
 	tmp.Add4B(getFrameID());
-	if (getFrameID() == MP4_META)
+	if (getFrameID() == MP4_META && !_noFullBox)
 		tmp.Add4B(0);
 	tmp.FileWrite(tmp.GetLength(), stream);
 	size_t counts = _children.GetCount();

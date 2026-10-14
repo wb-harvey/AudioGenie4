@@ -41,7 +41,10 @@ public:
 	void insertObject(CWMA_Object* object, size_t position);
 	void replaceObject(CWMA_Object* object);
 	void Remove();
+	// 4.0.4.7: every object of the last load was read whole
+	bool isComplete() { return _complete; };
 private:
+	bool _complete;
 	IID testIID;
 	CAtlArray<CWMA_Object *> _children;	
 };

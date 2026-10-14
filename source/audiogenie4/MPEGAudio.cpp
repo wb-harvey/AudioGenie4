@@ -102,7 +102,7 @@ WORD CMPEGAudio::GetCoefficient()
 	else
 	{
 		if (Frame.LayerID == MPEG_LAYER_I)
-			return 24;
+			return 48; // 384 samples in slots of 4 bytes, as in MPEG-1 (4.0.4.6 and earlier: 24, half the frame)
 		else if (Frame.LayerID == MPEG_LAYER_II)
 			return 144;
 		else
@@ -202,11 +202,29 @@ void CMPEGAudio::GetXingInfo(long Index, BYTE Data[])
 	/* Extract Xing VBR info at given position */
 	FVBR.Found = true;
 	memcpy(&FVBR.ID, VBR_ID_XING, 4);
-	FVBR.Frames = Get4B(Data + Index + 8);
-	FVBR.Bytes = Get4B(Data + Index + 12);
-	FVBR.Scale = Data[Index + 119];
+	// 4.0.4.7: the flags say which fields are there; all four were assumed (4.0.4.6 and earlier), so a header
+	// without the frame count read the byte count as frames, and so on
+	long flags = Get4B(Data + Index + 4);
+	long pos = Index + 8;
+	if (flags & 1)
+	{
+		FVBR.Frames = Get4B(Data + pos);
+		pos += 4;
+	}
+	if (flags & 2)
+	{
+		FVBR.Bytes = Get4B(Data + pos);
+		pos += 4;
+	}
+	if (flags & 4)
+		pos += 100; // TOC
+	if (flags & 8)
+	{
+		FVBR.Scale = Data[pos + 3];
+		pos += 4;
+	}
 	/*{ Vendor ID can be not present */
-	memcpy(&FVBR.VendorID, &Data[Index + 120], 8);
+	memcpy(&FVBR.VendorID, &Data[pos], 8);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -259,7 +277,8 @@ long CMPEGAudio::GetBitRate()
 	float Res1 = 0, Res2 = 0;
 
 	/* Get bit rate, calculate average bit rate if VBR header found */
-	if (FVBR.Found && FVBR.Frames > 0)
+	// (a Xing header may leave out the byte count: then the bit rate of the frame)
+	if (FVBR.Found && FVBR.Frames > 0 && (FVBR.Bytes > 0 || CTools::configValues[CONFIG_MPEGEXACTREAD] != 0))
 	{
 		if (CTools::configValues[CONFIG_MPEGEXACTREAD] != 0)
 		{
@@ -288,8 +307,8 @@ long CMPEGAudio::GetFrames()
 	float tmp;
 	if (!Frame.Found)
 		return 0;
-	/* Get total number of frames, calculate if VBR header not found */
-	if (FVBR.Found)
+	/* Get total number of frames, calculate if VBR header not found (or it has no frame count) */
+	if (FVBR.Found && FVBR.Frames > 0)
 		return FVBR.Frames;
 	else
 	{
@@ -510,13 +529,20 @@ bool CMPEGAudio::FindFrame()
 		{
 			DecodeHeader(HeaderData);
 			/* Check for next frame and try to find VBR header */
-			if (ValidFrameAt((long)Iterator + GetFrameLength(), Data))
+			// 4.0.4.7: only when the next header is in the buffer; an MPEG-2.5 Layer II frame is up to 2881 bytes
+			// and the check read past the end of Data (4.0.4.6 and earlier)
+			long nextFrame = (long)Iterator + GetFrameLength();
+			if (nextFrame + 4 <= DATASIZE && ValidFrameAt(nextFrame, Data))
 			{
 				Frame.Found = true;
 				Frame.FramePosition = StartPosition + (long)Iterator;
 				Frame.FrameSize = GetFrameLength();
 				Frame.Xing = IsXing(Iterator + 4, Data);
-				FindVBR(Iterator + GetVBRDeviation(), Data);				
+				FindVBR(Iterator + GetVBRDeviation(), Data);
+				// 4.0.4.7: a VBRI header is always 32 bytes after the frame header, whatever the version and mode
+				// (only MPEG-1 stereo files had it found)
+				if (!FVBR.Found && memcmp(&Data[Iterator + 36], VBR_ID_FHG, 4) == 0)
+					GetFhgInfo(Iterator + 36, Data);
 				break;
 			}
 		}
@@ -598,35 +624,76 @@ bool CMPEGAudio::SetOriginalBit(LPCWSTR FileName, bool neu)
 
 /* -------------------------------------------------------------------------- */
 
+// 4.0.4.7: the size of an ID3v2 tag in front of the file, by the same rule the analysis uses (CID3V2::ReadHeader)
+static __int64 MPEGReadID3v2Size(FILE *Stream, __int64 fileLen)
+{
+	BYTE buf[10];
+	if (_fseeki64(Stream, 0, SEEK_SET) != 0 || fread(buf, 1, 10, Stream) != 10)
+		return 0;
+	if (buf[0] != 'I' || buf[1] != 'D' || buf[2] != '3' || buf[3] == 0xFF || buf[4] == 0xFF)
+		return 0;
+	__int64 size = ((__int64)buf[6] << 21) + (buf[7] << 14) + (buf[8] << 7) + buf[9] + 10;
+	if (buf[3] == 4 && (buf[5] & 0x10) == 0x10)
+		size += 10; // v2.4 footer (an extended header is inside the size)
+	return (size > fileLen) ? 0 : size;
+}
+
 bool CMPEGAudio::SetBit(LPCWSTR FileName, int HdrPos, BYTE BitPos, bool neu)
 {
+	// 4.0.4.7: the frame is looked for with a local CMPEGAudio, by the target file's own ID3v2 size and length (the
+	// globals of the last analyzed file were used, and the analyzed file's MPEG data was overwritten), the 4 bytes
+	// are written only when they still are a frame header, and every step is checked (4.0.4.6 and earlier)
 	BYTE HeaderData[4];
-	bool result = false;
 	FILE *Stream;
-	if ( (Stream = _wfsopen(FileName, READ_AND_WRITE, _SH_DENYWR)) != NULL)
+	errno = 0;
+	if ( (Stream = _wfsopen(FileName, READ_AND_WRITE, _SH_DENYWR)) == NULL)
 	{
-		result = ReadFromFile(Stream);
-		if (Frame.Found == false)
-		{
-			fclose(Stream);
-			return false;
-		}
-		// an StartPosition steht der Header
-		fseek(Stream, Frame.FramePosition, SEEK_SET);
-		fread(HeaderData, 1, 4, Stream);
-		if (neu)
-			HeaderData[HdrPos] |= BitPos;
-		else
-			HeaderData[HdrPos] &= ~BitPos;
-
-		fseek(Stream, Frame.FramePosition, SEEK_SET);
-		fwrite(HeaderData, 1, 4, Stream);
-		fflush(Stream);
-		fclose(Stream);
-		return true;
+		CTools::instance().setLastError(errno);
+		return false;
 	}
-	CTools::instance().setLastError(errno);
-	return result;
+	__int64 fileLen = _filelengthi64(_fileno(Stream));
+	long savedFileSize = CTools::FileSize;
+	long savedID3v2Size = CTools::ID3v2Size;
+	long savedFirstPos = CTools::firstMpegAudioPos;
+	CTools::FileSize = (fileLen > 0x7FFFFFFF) ? 0x7FFFFFFF : (long)fileLen;
+	CTools::ID3v2Size = (long)MPEGReadID3v2Size(Stream, fileLen);
+	bool found;
+	long position;
+	{
+		CMPEGAudio probe;
+		probe.ReadFromFile(Stream);
+		found = probe.Frame.Found;
+		position = probe.Frame.FramePosition;
+	}
+	CTools::FileSize = savedFileSize;
+	CTools::ID3v2Size = savedID3v2Size;
+	CTools::firstMpegAudioPos = savedFirstPos;
+	if (!found)
+	{
+		fclose(Stream);
+		CTools::instance().setLastError(ERR_INVALID_FORMAT);
+		return false;
+	}
+	// an StartPosition steht der Header
+	if (_fseeki64(Stream, position, SEEK_SET) != 0 || fread(HeaderData, 1, 4, Stream) != 4 || !IsFrameHeader(HeaderData))
+	{
+		fclose(Stream);
+		CTools::instance().setLastError(ERR_INVALID_FORMAT);
+		return false;
+	}
+	if (neu)
+		HeaderData[HdrPos] |= BitPos;
+	else
+		HeaderData[HdrPos] &= ~BitPos;
+
+	bool written = (_fseeki64(Stream, position, SEEK_SET) == 0 && fwrite(HeaderData, 1, 4, Stream) == 4);
+	if (fflush(Stream) != 0 || ferror(Stream))
+		written = false;
+	if (fclose(Stream) != 0)
+		written = false;
+	if (!written)
+		CTools::instance().setLastError(errno != 0 ? errno : EIO);
+	return written;
 }
 
 bool CMPEGAudio::IsValid()

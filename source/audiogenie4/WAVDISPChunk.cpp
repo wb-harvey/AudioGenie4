@@ -62,10 +62,10 @@ CWAVDISPChunk::~CWAVDISPChunk(void)
 bool CWAVDISPChunk::load(FILE *Stream, u32 offset, u32 size)
 {
 	ATLTRACE(_T("DISP chunk with %i bytes at Offset %u\n"), size, offset);
-	fseek(Stream, offset, SEEK_SET);
-	_data.FileRead(size, Stream);
-	_type = _data.GetR4B(0);
-	return true;
+	// 4.0.4.7: the bounded, checked read of CWAVChunk; the type only from a chunk that holds one
+	bool result = CWAVChunk::load(Stream, offset, size);
+	_type = (_data.GetLength() >= 4) ? _data.GetR4B(0) : 0;
+	return result;
 }
 
 CAtlString CWAVDISPChunk::getText()
@@ -84,7 +84,7 @@ void CWAVDISPChunk::setText(LPCWSTR text)
 	if (wcslen(text) > 0)
 	{
 		_data.AddR4B(CF_TEXT);
-		_data.AddEncodedString(TEXT_ENCODED_ANSI, text, TEXT_WITHOUT_ENCODING, TEXT_WITH_NULLBYTES);
+		WAVAddAnsiString(&_data, text, TEXT_WITH_NULLBYTES);
 	}
 }
 

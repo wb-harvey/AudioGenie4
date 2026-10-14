@@ -86,10 +86,11 @@ void CID3F_WXXX::decode()
 		{
 			encodingID = _blob.GetAt(0);
 			int start = 1;
-			_description = _blob.getNextString(encodingID, start);
+			_description = _blob.getNextString(textCode(), start);
 			_url = _blob.getNextString(TEXT_ENCODED_ANSI, start);
-		}		
-	}	
+		}
+		isDecoded = true; // 4.0.4.7: never set, so every call decoded (and resynced) the frame again (4.0.4.6 and earlier)
+	}
 }
 void CID3F_WXXX::encode()
 {
@@ -97,7 +98,7 @@ void CID3F_WXXX::encode()
 	{
 		decode();
 		_blob.Clear();
-		_blob.AddEncodedString(encodingID, _description, TEXT_WITH_ENCODING, TEXT_WITH_NULLBYTES);
+		_blob.AddEncodedString(textCode(), _description, TEXT_WITH_ENCODING, TEXT_WITH_NULLBYTES);
 		_blob.AddEncodedString(TEXT_ENCODED_ANSI, _url, TEXT_WITHOUT_ENCODING, TEXT_WITHOUT_NULLBYTES);
 		mustRebuild = false;
 	}

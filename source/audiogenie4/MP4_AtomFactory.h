@@ -27,6 +27,9 @@
 #define cMDAT static_cast<CMP4_MDAT*>
 #define cMDHD static_cast<CMP4_MDHD*>
 #define cSOUN static_cast<CMP4_SOUN*>
+
+// atoms nest about 7 deep in real files
+#define MP4_MAX_NESTING 32
 #define cSTCO static_cast<CMP4_STCO*>
 
 static enum MP4_FRAMETYPES {
@@ -62,14 +65,17 @@ public:
 	static int count;
 	static long firstAudioPos, lastAudioPos, mediaLength, lastOffset;
 	static CMP4_MDHD* lastMDHDAtom;
+	// set when a load stopped early inside the atom tree (a damaged size, a 64-bit size, too deep): saving
+	// that tree would drop what was not read, so SaveToFile refuses
+	static bool loadError;
 	CMP4Atom *createAtom(const u32 atomID) const;
 	CAtlString getText(CMP4Atom *atom);
 	CAtlString getiTuneText(CMP4Atom *atom);
 	CAtlString getiTuneFrame(CMP4Atom *atom);
 	CAtlString getiTuneMean(CMP4Atom *atom);
-	void setText(CMP4Atom *atom, CAtlString newText);
+	bool setText(CMP4Atom *atom, CAtlString newText);
 	void setItuneText(CMP4Atom *atom, CAtlString frame, CAtlString newText);
-	void setTrack(CMP4Atom *atom, BYTE von, BYTE bis);
+	void setTrack(CMP4Atom *atom, int von, int bis);
 	void buildData(CMP4Atom *atom, int length, BYTE flag);	
 protected:
 	/*!

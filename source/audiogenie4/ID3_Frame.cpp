@@ -54,6 +54,8 @@ void CID3_Frame::init(unsigned int frameID)
 	encodingID = 255;
 	useTextEncoding = false;
 	flags = 0;
+	isResynced = true; // cleared before load() for a frame read from a file
+	isRaw = false;
 }
 
 CID3_Frame::~CID3_Frame(void)
@@ -64,6 +66,17 @@ CID3_Frame::~CID3_Frame(void)
 
 long CID3_Frame::getSize()
 {
+	// 4.0.4.7: an untouched compressed or encrypted frame is written as it was read (getStoreID)
+	if (isRaw && !mustRebuild)
+		return (long)_blob.GetLength();
+	// 4.0.4.7: a frame whose class doesn't resync in decode() (an unknown frame) is resynced here: its unsync flag
+	// is no longer written (storeFrame)
+	if (isUnsynchronized())
+	{
+		decode();
+		if (isUnsynchronized())
+			resync();
+	}
 	// Prüfe auf Encoding
 	if (useTextEncoding)
 	{
@@ -89,15 +102,32 @@ void CID3_Frame::load(BYTE* source, long size)
 {
 	if (isCompressed())
 		CTools::instance().setLastError(ERR_COMPRESSED_FRAME_NOT_SUPPORTED);
-	int extraSize = 0; 
-	if (isDataLenIndicator())
-		extraSize+=4;	
-	if (isEncrypted())
+	// isResynced is set by the caller: false for a frame of the tag, the chapter's state for a sub-frame
+	// 4.0.4.7: the bytes in front of the frame data are the group byte (v2.3 and v2.4) and the data length (v2.4).
+	// The group byte was kept as text, and the encryption byte was cut although the data stays encrypted. A compressed
+	// or encrypted frame can't be decoded: it is kept as read (with its prefixes) and written back unchanged in the same
+	// tag version only (getStoreID). A frame shorter than its prefixes made size - extraSize negative, a huge copy
+	// (4.0.4.6 and earlier); it is kept as read too.
+	int extraSize = 0;
+	if (isGrouped())
 		extraSize+=1;
+	if (isDataLenIndicator())
+		extraSize+=4;
+	isRaw = isCompressed() || isEncrypted() || size < extraSize;
+	if (isRaw)
+	{
+		if (size > 0)
+			_blob.AddMemory(source, size);
+		if (isUnsynchronized())
+			resync();
+		isDecoded = true; // never decoded: its data isn't readable
+		mustRebuild = false;
+		return;
+	}
 	_blob.AddMemory(source + extraSize, size - extraSize);
 	isDecoded = false;
 	// falls unsynchronized gesetzt ist, muss alles beim Speichern decodiert werden, da beim Speichern das unsync bit nicht mehr gesetzt ist
-	mustRebuild = isUnsynchronized();	
+	mustRebuild = isUnsynchronized();
 }
 
 void CID3_Frame::save(FILE *stream)
@@ -139,36 +169,61 @@ bool CID3_Frame::setData(BYTE *source, unsigned int maxLen)
 	return true;
 }
 
-void CID3_Frame::storeFrame(CBlob *tmp)
+// 4.0.4.7: the ID the frame is saved with in the new tag version, F_NONE when it isn't saved. calcTagSize and
+// storeFrame both use it, so the computed tag size matches the bytes written.
+u32 CID3_Frame::getStoreID()
 {
 	u32 id = CID3_FrameFactory::instance().findTagForVersion(_frameID);
+	// a compressed or encrypted frame kept as read can only be written back into a tag of its own version
+	if (id != F_NONE && isRaw && !mustRebuild && CTools::ID3V2oldTagVersion != CTools::ID3V2newTagVersion)
+		return F_NONE;
+	return id;
+}
+
+void CID3_Frame::storeFrame(CBlob *tmp)
+{
+	u32 id = getStoreID();
 	if (id != F_NONE)
 	{
 		// Ermittle die Framegrösse und berücksichtige dabei evtl. Synchronisation
 		long FrameSize = getSize();
-		// Falls DataLenBit gesetzt ist, lösche das
-		if (isDataLenIndicator())
-			flags-=1;
+		// 4.0.4.7: the flags written match the bytes written. The data is written resynced, without group byte and data
+		// length (load), so only the status flags (tag/file alter preservation, read only) are kept, moved to their
+		// place in the new version. The unsync, data length, compression and encryption flags were written back as
+		// read (also for v2.3 <-> v2.4, whose bits differ), describing data that was no longer there (4.0.4.6 and earlier).
+		// A compressed or encrypted frame kept as read keeps its flags (same version only), less unsync.
+		u16 newFlags = 0;
+		if (isRaw && !mustRebuild)
+			newFlags = (CTools::ID3V2oldTagVersion == TAG_VERSION_2_4) ? (u16)(flags & ~0x0002) : flags;
+		else
+		{
+			u16 status = 0; // %abc: tag alter preservation, file alter preservation, read only
+			if (CTools::ID3V2oldTagVersion == TAG_VERSION_2_3)
+				status = (flags >> 13) & 7;
+			else if (CTools::ID3V2oldTagVersion == TAG_VERSION_2_4)
+				status = (flags >> 12) & 7;
+			newFlags = (CTools::ID3V2newTagVersion == TAG_VERSION_2_3) ? (u16)(status << 13) : (u16)(status << 12);
+		}
 		switch (CTools::ID3V2newTagVersion)
 		{
 		case TAG_VERSION_2_2:
 			{
 				tmp->Add3B(id);
-				tmp->Add3B(FrameSize);					
+				tmp->Add3B(FrameSize);
 				break;
 			}
 		case TAG_VERSION_2_3:
 			{
 				tmp->Add4B(id);
 				tmp->Add4B(FrameSize);
-				tmp->Add2B(flags);
+				tmp->Add2B(newFlags);
 				break;
 			}
 		case TAG_VERSION_2_4:
 			{
 				tmp->Add4B(id);
 				tmp->AddS4B(FrameSize);
-				tmp->Add2B(flags);
+				tmp->Add2B(newFlags);
 				break;
 			}
 		}
@@ -197,6 +252,7 @@ void CID3_Frame::resync()
 	_blob.AddMemory(dest, ln);
 	delete [] dest;
 	mustRebuild = true;
+	isResynced = true; // 4.0.4.7: never resynced twice (a second pass turned FF 00 00 of the data into FF)
 }
 
 //	To be used when writing an ID3v2-tag
@@ -245,6 +301,8 @@ p - Data length indicator
 
 bool CID3_Frame::isUnsynchronized()
 { 
+	if (isResynced) // 4.0.4.7: already resynced, or not read from a file
+		return false;
 	if (CTools::ID3V2oldTagVersion == TAG_VERSION_2_3) // Flags wirken global auf alle Frames bei v2.3
 		return ( (CTools::ID3V2Flags & 128) == 128);
 	if (CTools::ID3V2oldTagVersion == TAG_VERSION_2_4 && (CTools::ID3V2Flags & 128) == 128) // Falls Unsynchronized bei v2.4 eingeschaltet ist, prüfe die Frame flags

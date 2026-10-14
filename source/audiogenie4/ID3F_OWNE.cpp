@@ -95,7 +95,7 @@ void CID3F_OWNE::decode()
 			_date.SetAt(5, _blob.GetAt(start++));
 			_date.SetAt(6, _blob.GetAt(start++));
 			_date.SetAt(7, _blob.GetAt(start++));
-			_seller = _blob.getNextString(encodingID, start);	
+			_seller = _blob.getNextString(textCode(), start);	
 		}		
 		isDecoded = true;
 	}	
@@ -109,7 +109,7 @@ void CID3F_OWNE::encode()
 		_blob.AddValue(encodingID);
 		_blob.AddEncodedString(TEXT_ENCODED_ANSI, _price, TEXT_WITHOUT_ENCODING, TEXT_WITH_NULLBYTES);
 		_blob.AddEncodedString(TEXT_ENCODED_ANSI, _date, TEXT_WITHOUT_ENCODING, TEXT_WITHOUT_NULLBYTES);
-		_blob.AddEncodedString(encodingID, _seller, TEXT_WITHOUT_ENCODING, TEXT_WITHOUT_NULLBYTES);
+		_blob.AddEncodedString(textCode(), _seller, TEXT_WITHOUT_ENCODING, TEXT_WITHOUT_NULLBYTES);
 		mustRebuild = false;		
 	}
 }

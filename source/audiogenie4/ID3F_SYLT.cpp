@@ -156,11 +156,11 @@ void CID3F_SYLT::decode()
 			_timestampformat = _blob.GetAt(4);
 			_contenttype = _blob.GetAt(5);
 			int start = 6;
-			_description = _blob.getNextString(encodingID, start);
+			_description = _blob.getNextString(textCode(), start);
 			// Extrahiere Text ( Ansi oder Unicode oder UTF8 )
 			// WICHTIG: evtl BOM wird hier nicht mehr aufgeführt!!!
 			// Deshalb umsetzen
-			BYTE code = (encodingID == TEXT_ENCODED_UTF16BOM) ? TEXT_ENCODED_UTF16 : encodingID;
+			BYTE code = (encodingID == TEXT_ENCODED_UTF16BOM) ? (BYTE)TEXT_ENCODED_UTF16 : textCode();
 			int nr = 0;
 			_data.AddBlob(_blob, start);
 			start = 0;
@@ -169,6 +169,8 @@ void CID3F_SYLT::decode()
 			while (start < (int)_data.GetLength())
 			{
 				tmp = _data.getNextString(code, start);
+				if (start + 4 > (int)_data.GetLength()) // 4.0.4.7: no time stamp left (4.0.4.6 and earlier read past the data)
+					break;
 				nr = _data.Get4B(start);
 				start+=4;
 				_text.AppendFormat(_T("[%08d]%s\n"), nr, tmp);				
@@ -187,7 +189,7 @@ void CID3F_SYLT::encode()
 		_blob.AddFixedAnsiString(_language, 3);
 		_blob.AddValue(_timestampformat);
 		_blob.AddValue(_contenttype);
-		_blob.AddEncodedString(encodingID, _description, TEXT_WITHOUT_ENCODING, TEXT_WITH_NULLBYTES);		
+		_blob.AddEncodedString(textCode(), _description, TEXT_WITHOUT_ENCODING, TEXT_WITH_NULLBYTES);		
 		// text zerlegen und in id3 format umwandeln
 		// Textschema: "[00000000]string1\n[00000000]string2\n" usw
 		CAtlString tmp = _text;
@@ -195,24 +197,26 @@ void CID3F_SYLT::encode()
 		tmp.Append(_T("\n"));
 		int pos = tmp.Find(_T("\n"));
 		int start = 0;
-		BYTE code = (encodingID == TEXT_ENCODED_UTF16BOM) ? TEXT_ENCODED_UTF16 : encodingID;
+		BYTE code = (encodingID == TEXT_ENCODED_UTF16BOM) ? (BYTE)TEXT_ENCODED_UTF16 : textCode();
 		while (pos >= 0)
 		{
 			entry = tmp.Mid(start, pos - start);
-			if (entry.GetLength() <= 10)
+			start = pos + 1;
+			pos = tmp.Find(_T("\n"), start);
+			// 4.0.4.7: an empty line (the text ends with "\n") is skipped, an entry with an empty text ("[00001000]") is
+			// written with an empty text, and a malformed entry is skipped. Each of them ended the encoding, losing every
+			// later sync (4.0.4.6 and earlier).
+			if (entry.GetLength() == 0)
+				continue;
+			if (entry.GetLength() < 10)
 			{
 				CTools::instance().setLastError(ERR_SYNCPARSE_ERROR);
-				return;
+				continue;
 			}
 			int nr = _wtoi(entry.Mid(1,8));
 			CAtlString txt = entry.Mid(10);
-			if (txt.GetLength() > 0)
-			{
-				_blob.AddEncodedString(code, txt, TEXT_WITHOUT_ENCODING, TEXT_WITH_NULLBYTES);
-				_blob.Add4B(nr);
-			}
-			start = pos + 1;
-			pos = tmp.Find(_T("\n"), start);
+			_blob.AddEncodedString(code, txt, TEXT_WITHOUT_ENCODING, TEXT_WITH_NULLBYTES);
+			_blob.Add4B(nr);
 		}
 		mustRebuild = false;
 	}

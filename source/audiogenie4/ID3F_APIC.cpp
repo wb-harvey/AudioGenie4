@@ -80,6 +80,27 @@ $14  Publisher/Studio logotype
 */
 
 
+// 4.0.4.7: reads a picture file into data. _filelength returned -1 for a file over 2 GB, a huge read; a picture over
+// 64 MB is refused. A link read from a tag (fromTag) to a network path (\\server or //server) is not opened: a file
+// could make the PC connect to any server and send it the user's Windows (NTLM) credentials (4.0.4.6 and earlier).
+static bool readPictureFile(CBlob& data, LPCWSTR fileName, bool fromTag)
+{
+	if (fileName == NULL)
+		return false;
+	if (fromTag && (fileName[0] == '\\' || fileName[0] == '/') && (fileName[1] == '\\' || fileName[1] == '/'))
+		return false;
+	FILE *Stream;
+	errno = 0;
+	if ( (Stream = _wfsopen(fileName, READ_ONLY, _SH_DENYNO)) == NULL)
+		return false;
+	__int64 length = _filelengthi64(_fileno(Stream));
+	bool result = (length >= 0 && length <= 64 * 1024 * 1024);
+	if (result)
+		data.FileRead((size_t)length, Stream);
+	fclose(Stream);
+	return result;
+}
+
 CID3F_APIC::CID3F_APIC(void)
 {
 	init(0, EMPTY);	
@@ -148,21 +169,15 @@ void CID3F_APIC::decode()
 				_mime = _blob.getNextString(TEXT_ENCODED_ANSI, start);
 			}
 			_pictureType = _blob.GetAt(start++);
-			_description = _blob.getNextString(encodingID, start);
+			_description = _blob.getNextString(textCode(), start);
 			// nun Bilddaten
 			// Falls Mime --> ist , dann Bild aus Datei lesen
 			if (_mime.Compare(_T("-->")) == 0)
 			{
 				_isLink = true;
 				_pictureLink = _blob.getNextString(TEXT_ENCODED_ANSI, start);
-				FILE *tmpSource;
-				if ( (tmpSource = _wfsopen(_pictureLink, READ_ONLY, _SH_DENYNO)) != NULL)
-				{
-					_data.FileRead(_filelength(_fileno(tmpSource)), tmpSource);
-					fclose(tmpSource);
-				}
-				else
-					CTools::instance().setLastError(ERR_IMAGEURL_NOT_FOUND, _pictureLink);				
+				if (!readPictureFile(_data, _pictureLink, true))
+					CTools::instance().setLastError(ERR_IMAGEURL_NOT_FOUND, (LPCWSTR)_pictureLink);				
 			}
 			else // Bild aus Speicher lesen
 			{
@@ -198,7 +213,7 @@ void CID3F_APIC::encode()
 			_blob.AddEncodedString(TEXT_ENCODED_ANSI, _mime, TEXT_WITHOUT_ENCODING, TEXT_WITH_NULLBYTES);		
 		}
 		_blob.AddValue(_pictureType);
-		_blob.AddEncodedString(encodingID, _description, TEXT_WITHOUT_ENCODING, TEXT_WITH_NULLBYTES);
+		_blob.AddEncodedString(textCode(), _description, TEXT_WITHOUT_ENCODING, TEXT_WITH_NULLBYTES);
 		if (_isLink)
 			_blob.AddEncodedString(TEXT_ENCODED_ANSI, _pictureLink, TEXT_WITHOUT_ENCODING, TEXT_WITH_NULLBYTES);
 		else
@@ -285,15 +300,13 @@ bool CID3F_APIC::getPictureFile(LPCWSTR fileName)
 bool CID3F_APIC::setPictureFile(LPCWSTR fileName)
 {
 	decode();
-	FILE *Stream;
 	ATLTRACE(_T("open %s READ_ONLY\n"), fileName);
 	_data.Clear();
 	_isLink = false;
 	_pictureLink.Empty();
-	if ( (Stream = _wfsopen(fileName, READ_ONLY, _SH_DENYNO)) != NULL)
+	if (readPictureFile(_data, fileName, false))
 	{
-		_data.FileRead(_filelength(_fileno(Stream)), Stream); 
-		fclose(Stream);
+		mustRebuild = true; // 4.0.4.7: the new picture was not written over an untouched frame (4.0.4.6 and earlier)
 		// MIME neu bilden
 		if (CTools::ID3V2oldTagVersion == TAG_VERSION_2_2)
 			_mime = CTools::instance().ExtractSmallMimeFromPicture(_data.m_pData);
@@ -301,14 +314,13 @@ bool CID3F_APIC::setPictureFile(LPCWSTR fileName)
 			_mime = CTools::instance().ExtractMimeFromPicture(_data.m_pData);
 		return true;
 	}
-	CTools::instance().setLastError(errno);
+	CTools::instance().setLastError(errno != 0 ? errno : ERR_FRAME_TOO_BIG);
 	return false;
 }
 
 bool CID3F_APIC::setFileLink(LPCWSTR fileName)
 {
 	decode();
-	FILE *Stream;
 	_data.Clear();
 	_isLink = true;
 	_pictureLink.Empty();
@@ -316,11 +328,8 @@ bool CID3F_APIC::setFileLink(LPCWSTR fileName)
 	{
 		_pictureLink = fileName;
 		_mime = MIME_LINK;
-		if ( (Stream = _wfsopen(fileName, READ_ONLY, _SH_DENYNO)) != NULL)
-		{
-			_data.FileRead(_filelength(_fileno(Stream)), Stream); 
-			fclose(Stream);
-		}
+		mustRebuild = true; // 4.0.4.7: the link was not written over an untouched frame (4.0.4.6 and earlier)
+		readPictureFile(_data, fileName, false);
 		return true;
 	}	
 	CTools::instance().setLastError(ERR_INVALID_FILENAME);

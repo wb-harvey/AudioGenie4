@@ -32,7 +32,10 @@ public:
 	void save(FILE *Destination);
 	void setSourceFile(CAtlString file) { _sourcefile = file; };
 	void setSameFile(bool status)       { _sameFile = status; };
+	// the last save did not copy all of the media data
+	bool failed()                       { return _failed; };
 private:
+	bool _failed;
 	u32 _position;
 	u32 _size;
 	CAtlString _sourcefile;

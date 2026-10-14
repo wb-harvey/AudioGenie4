@@ -73,6 +73,9 @@ void CID3F_CTOC::init(LPCWSTR ID, LPCWSTR Title, LPCWSTR Description, bool isOrd
 	_title = Title;
 	_description = Description;
 	_isOrdered = isOrdered;	
+	_isRoot = false; // 4.0.4.7: _isRoot, _flags and _count were not initialized for a new CTOC (4.0.4.6 and earlier)
+	_flags = 0;
+	_count = 0;
 	useTextEncoding = true;
 	_elements.SetCount(0, 6);
 	isDecoded = true;
@@ -90,6 +93,8 @@ void CID3F_CTOC::decode()
 {
 	if (!isDecoded)
 	{	
+		if (isUnsynchronized()) // 4.0.4.7: was missing (4.0.4.6 and earlier)
+			resync();
 		_data.Clear();
 		_elements.RemoveAll();
 		if (_blob.GetLength() < 3)
@@ -109,7 +114,7 @@ void CID3F_CTOC::decode()
 			_isRoot = ((_flags & 2) == 2);
 			int anz = 0;
 			CAtlString tst;
-			while (anz++ < _count)
+			while (anz++ < _count && (size_t)start < _blob.GetLength())
 				_elements.Add(_blob.getNextString(TEXT_ENCODED_ANSI, start));
 			_data.AddBlob(_blob, start);
 			convertBlobToFrames();
@@ -167,9 +172,13 @@ CAtlString CID3F_CTOC::getChildElementID(u16 pos)
 	return (pos > 0 && pos <= _elements.GetCount() ) ? _elements.GetAt(pos - 1) : EMPTY;
 }
 
+// 4.0.4.7: decode first (a later decode replaced the list), and the frame is rebuilt (a change made after a first
+// save was not written) (4.0.4.6 and earlier)
 void CID3F_CTOC::addChildElement(CAtlString id)
 {
+	decode();
 	_elements.Add(id);
+	mustRebuild = true;
 }
 
 short CID3F_CTOC::deleteChildElement(CAtlString ID)
@@ -183,6 +192,7 @@ short CID3F_CTOC::deleteChildElement(CAtlString ID)
 		{		
 			_elements.RemoveAt(count);
 			result++;
+			mustRebuild = true;
 		}		
 	}
 	return result;	

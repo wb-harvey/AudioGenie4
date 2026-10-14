@@ -45,16 +45,25 @@ bool CWMA_ExtContentDescription::load(FILE *Stream, size_t maxLen)
 {
 	ATLTRACE(_T("ExtContentDescription with %i bytes\n"), maxLen);
 	_data.FileRead(2, Stream);
+	if (_data.GetLength() != 2 || maxLen < 2)
+	{
+		CTools::instance().setLastError(ERR_WMA_PARSE);
+		_data.Clear();
+		return false;
+	}
 	u16 TagCount = _data.GetR2B(0);
+	// 4.0.4.7: each descriptor is bounded by what is left of the object, not by the whole object (4.0.4.6 and earlier)
+	size_t remaining = maxLen - 2;
 	CWMA_TagData *item;
 	for (size_t Iterator = 0; Iterator < TagCount; Iterator++)
 	{
 		item = new CWMA_TagData(EXTCONTENT_ART);
-		if (!item->load(Stream, maxLen) )
+		if (!item->load(Stream, remaining) )
 		{
 			delete item;
 			return false;
 		}
+		remaining -= item->getLoadedSize();
 		CWMA_ObjectFactory::instance().tagdatas.Add(item);
 		ATLTRACE(_T("Value:%s\n"), item->getFieldValue());
 	}

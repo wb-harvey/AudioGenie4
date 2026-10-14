@@ -40,18 +40,20 @@ bool CMD5Tool::calcHashFromFile(LPCWSTR FileName, long startPos, long endPos)
 {
 	md5->MD5Init(&ctx);
 	FILE *Stream;
-	long end, start;
+	__int64 end, start;
 	hash.Empty();
 	if ( (Stream = _wfsopen(FileName, READ_ONLY, _SH_DENYWR)) != NULL)
 	{
-		int len, maxLoad;
-		end = (endPos == 0) ? _filelength(_fileno(Stream)) - 1 : endPos;		
-		start = min(startPos, end);
+		// 4.0.4.7: 64-bit length and positions (_filelength is -1 for a file of 2 GB or more) (4.0.4.6 and earlier)
+		int len;
+		__int64 maxLoad;
+		end = (endPos == 0) ? _filelengthi64(_fileno(Stream)) - 1 : endPos;
+		start = min((__int64)startPos, end);
 		maxLoad = end - start + 1;
-		ATLTRACE(_T("MD5calc, start=%d ende=%d maxLoad=%d\n"), start, end, maxLoad);
-		if (fseek(Stream, start, SEEK_SET) == 0)
+		ATLTRACE(_T("MD5calc, start=%I64d ende=%I64d maxLoad=%I64d\n"), start, end, maxLoad);
+		if (start >= 0 && _fseeki64(Stream, start, SEEK_SET) == 0)
 		{
-			while ( (len = (int)fread(buffer, 1, min(MAX_MD5_BUFFER, maxLoad), Stream)) )
+			while (maxLoad > 0 && (len = (int)fread(buffer, 1, (size_t)min((__int64)MAX_MD5_BUFFER, maxLoad), Stream)) )
 			{
 				//ATLTRACE(_T("Old StartPos: %d "), ftell(Stream) - len);
 				//ATLTRACE(_T("Next StartPos: %d "), ftell(Stream));

@@ -43,6 +43,28 @@ Blob
 
 
 
+// A field of exactly maxLen bytes: as many whole characters as fit in the ANSI code page, padded with zeros. The
+// first maxLen characters were taken, which on a DBCS code page (Chinese, Japanese, Korean) are up to twice as many
+// bytes: the fields after it moved and the record was cut at 128 bytes, losing the genre (4.0.4.6 and earlier).
+static void AddFixedAnsi(CBlob *dst, const CAtlString &source, int maxLen)
+{
+  char buf[256];
+  int n = 0;
+  int k = min(source.GetLength(), maxLen);
+  for (; k > 0; k--)
+  {
+    if (k < source.GetLength() && IS_LOW_SURROGATE(source[k]))
+      continue; // (not between the halves of a surrogate pair)
+    n = WideCharToMultiByte(CP_ACP, 0, source, k, buf, sizeof(buf), NULL, NULL);
+    if (n > 0 && n <= maxLen)
+      break;
+    n = 0;
+  }
+  if (n > 0)
+    dst->AddMemory(buf, n);
+  dst->AddValue(0, maxLen - n);
+}
+
 //////////////////////////////////////////////////////////////////////
 // Konstruktion/Destruktion
 //////////////////////////////////////////////////////////////////////
@@ -66,7 +88,7 @@ bool CID3V1TagInfo::ReadFromFile(FILE *Stream)
   fseek(Stream, -131, SEEK_END);
   tmp->FileRead(131, Stream);
   if ( (tmp->GetLength() != 131)
-	  || (memcmp(tmp->m_pData, _T("APETAGEX"), 8) == 0)
+	  || (memcmp(tmp->m_pData, "APETAGEX", 8) == 0) // (a wide _T() literal never matched, 4.0.4.6 and earlier)
 	  || (tmp->GetAt(3) != 'T' || tmp->GetAt(4) != 'A' || tmp->GetAt(5) != 'G') )
 	  return false;
   
@@ -99,18 +121,18 @@ bool CID3V1TagInfo::WriteToFile(FILE *Stream)
   errno = 0;
   tmp->Clear();
   tmp->AddMemory(ID3V1_ID, 3);
-  tmp->AddFixedAnsiString(Title ,30);
-  tmp->AddFixedAnsiString(Artist, 30);
-  tmp->AddFixedAnsiString(Album, 30);
-  tmp->AddFixedAnsiString(Year, 4);
+  AddFixedAnsi(tmp, Title ,30);
+  AddFixedAnsi(tmp, Artist, 30);
+  AddFixedAnsi(tmp, Album, 30);
+  AddFixedAnsi(tmp, Year, 4);
   if (Track > 0)
   {
-    tmp->AddFixedAnsiString(Comment, 28);
+    AddFixedAnsi(tmp, Comment, 28);
     tmp->AddNullByte();
     tmp->AddValue(Track);    
   }
   else
-    tmp->AddFixedAnsiString(Comment, 30);
+    AddFixedAnsi(tmp, Comment, 30);
   tmp->AddValue(Genre);
   tmp->FileWrite(ID3V1_TAG_SIZE, Stream);
   return (errno == 0);

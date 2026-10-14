@@ -17,6 +17,66 @@ This library is far superior to TagLibSharp when dealing with ID3v1, ID3v2.3, ID
 TagLibSharp uses a dangerous anti-pattern of metadata consolidation and responds to requests for tag data by giving results for other tags.
 This regularly results in garbage tag data or file corruption because different tags use different encodings (ANSI, UTF-8, UTF-16). 
 
+Version 4.0.4.7
+A review of the whole source. Saves that could lose audio, tags or the file, and crashes on damaged files:
+All formats
+- AUDIOAnalyzeFileW that fails (file locked, missing) no longer leaves the previous file as the target: a following
+  *SaveChangesW wrote the cleared tags into the previous file.
+- AUDIOGetVersionW, AUDIOGetDurationW and the other AUDIO getters no longer crash before the first analyze.
+- FLAC, WAV, WMA and MP4 rebuilds check every read and write and replace the file only when the copy is complete
+  (as ID3v2 and OGG since 4.0.2); a full disk or a dropped network share left a cut file or none.
+- FLACSaveChangesToFileW, WAVSaveChangesToFileW and AUDIOSaveChangesToFileW for FLAC/WAV refuse a file other than
+  the analyzed one (it was rewritten with the analyzed file's layout, over its audio). Error 217.
+ID3v2
+- Frames the library doesn't know (GRP1, MVNM, MVIN, PCST...) are kept on save; they were dropped.
+- Chapter (CHAP/CTOC) titles and descriptions are kept on save; every save removed them.
+- AUDIOGetCommentW reads the comment without a description (else the first one that isn't iTunes data); it read
+  the first COMM (often iTunNORM) and the save copied that hex text into the visible comment. An empty comment
+  removes it.
+- AUDIOGetYearW/AUDIOSetYearW use TDRC in v2.4 tags (the year read empty and a set year was lost).
+- AUDIOSaveChangesW no longer adds empty TALB/TPE1/TCON/TRCK/TCOM frames (written without a BOM, other readers
+  reported them as damaged); an empty value removes the frame.
+- A file without an ID3v2 tag is saved in the default format, not in the last analyzed file's tag version.
+- v2.3 tags with unsynchronisation are read whole (frames lost bytes); v2.4 frame flags are written to match the
+  bytes; encoding $02 is UTF-16 big endian; extended header and v2.4 footer sizes are right (the extended header was
+  read as frames and 10 bytes of audio could be cut).
+- ID3V2SetFormatAndEncodingW refuses values out of range (format 4 wrote a broken tag).
+- ID3V2GetTextFrameW/ID3V2GetURLFrameW on a frame that isn't text/URL (PCNT, APIC...) return empty instead of
+  crashing; the setters refuse such IDs.
+- No crash on: UTF-16 text over 512 KB, a frame shorter than its data length indicator, a v2.3 frame size of
+  FFFFFFFF, a damaged chapter sub-frame, a cue file with a short INDEX line or a repeated TRACK; a CHAP passed to
+  the CTOC child functions; a TOC that lists itself.
+- ID3V2ImportCueFileW: CUE frames are 1/75 s (were 1/76) and UTF-8 cue files read right.
+- "-->" picture links in a tag are not opened when they point to a network path (\\server\...), nor over 64 MB.
+- Smaller: POPM without a counter, SYLT empty lines, "(RX)"/"(CR)" genres read as Blues, RVA2/EQU2 converted
+  between versions as garbage, chapter edits lost on a second save, a new CTOC's root flag random.
+FLAC / OGG / APE / Lyrics3
+- A FLAC save after a rebuild (adding a cover) without a new analyze no longer puts the old metadata in front of
+  the audio; damaged metadata blocks refuse the save instead of overwriting audio; a zero-length block no longer ends
+  the metadata; damaged PICTURE blocks no longer crash the read.
+- FLACAddPictureArrayW writes the picture's MIME type and data and returns -1 on success (it returned 0, and the
+  picture could be saved as an empty link).
+- Vorbis comments (FLAC and OGG): a key with several values no longer grows on every save ("Rock|Pop|Pop..."),
+  values over 256 KB (OGG cover art) and non-UTF-8 values are no longer read empty and deleted.
+- A damaged Lyrics3 tag no longer makes a save or remove cut the file to 128 bytes, nor hangs the read.
+- APEv1 tags: an edited value is stored as text, not raw UTF-16, and ANSI values are converted to UTF-8.
+- Monkey's Audio "Insane" compression no longer reads out of the table; WavPack custom sample rates no longer do.
+MP4 / M4A
+- Files with several mdat atoms or fragments (moof), 64-bit atom sizes, or damaged atoms refuse to save instead of
+  losing audio; an atom size 2..7 no longer crashes the read.
+- A file without an ilst keeps its udta (chapters, GPS) on save; vmhd and QuickTime-style meta keep their data.
+- MP4SetTextFrameW on trkn/gnre/covr no longer empties the field (covr then crashed).
+- Integer atoms (tmpo, stik, cnID, plID...) are written as integers; track/disk numbers over 255 are kept.
+- mdhd version 1 durations; duration of files with several sound tracks is the longest, not the sum.
+WMA / WAV / MPEG
+- WAV: a data chunk size of 0 or FFFFFFFF (recordings cut short, ffmpeg pipes) no longer makes a save write the file
+  without its audio; a WAV over 2 GB keeps its audio; BlockAlign 0 no longer crashes AUDIOGetDurationW; ID3v2/ID3v1
+  around the RIFF are kept; Hebrew INFO text is written in code page 1255 on a PC whose code page can't hold it.
+- WMA: the header object count matches the objects written (a file could become unplayable); damaged descriptor
+  sizes no longer overflow the heap; long values move to the Metadata Library instead of a cut 16-bit length;
+  clearing every extended field works.
+- MPEGSetCopyrightedW/OriginalW/PrivateW only write into MPEG files, at a checked frame header.
+
 Version 4.0.4.6
 - An APE item whose size is near 2 GB no longer crashes the read: the size check wrapped around in 32 bits, passed,
   and a 2 GB value was allocated (an exception out of the DLL ends the calling app on x86).

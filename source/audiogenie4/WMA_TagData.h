@@ -44,7 +44,11 @@ public:
 	const CAtlString getFieldName();
 	bool setNewPicture(BYTE *arr, u32 len, LPCWSTR Description, BYTE picType);
 	void buildData(CBlob* blob);
+	// 4.0.4.7: the bytes the last load took from the object
+	size_t getLoadedSize() { return _loadedSize; };
 private:
+	void fitArt();
+	size_t _loadedSize;
 	BYTE _art;
 	u16 FieldSize, Type, LanguageListIndex, StreamNumber;
 	CAtlString FieldName;

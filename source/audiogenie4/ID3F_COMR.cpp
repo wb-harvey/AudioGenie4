@@ -125,6 +125,8 @@ void CID3F_COMR::decode()
 {
 	if (!isDecoded)
 	{	
+		if (isUnsynchronized()) // 4.0.4.7: was missing (4.0.4.6 and earlier)
+			resync();
 		_data.Clear();
 		if (_blob.GetLength() < 10)
 		{
@@ -152,8 +154,8 @@ void CID3F_COMR::decode()
 			_validUntil.SetAt(7, _blob.GetAt(start++));
 			_contactUrl = _blob.getNextString(TEXT_ENCODED_ANSI, start);	
 			_receivedAs = _blob.GetAt(start++);
-			_seller = _blob.getNextString(encodingID, start);
-			_description = _blob.getNextString(encodingID, start);
+			_seller = _blob.getNextString(textCode(), start);
+			_description = _blob.getNextString(textCode(), start);
 			_mime = _blob.getNextString(TEXT_ENCODED_ANSI, start);
 			_data.AddBlob(_blob, start);
 		}		
@@ -171,8 +173,8 @@ void CID3F_COMR::encode()
 		_blob.AddEncodedString(TEXT_ENCODED_ANSI, _validUntil, TEXT_WITHOUT_ENCODING, TEXT_WITHOUT_NULLBYTES);		
 		_blob.AddEncodedString(TEXT_ENCODED_ANSI, _contactUrl, TEXT_WITHOUT_ENCODING, TEXT_WITH_NULLBYTES);		
 		_blob.AddValue(_receivedAs);
-		_blob.AddEncodedString(encodingID, _seller, TEXT_WITHOUT_ENCODING, TEXT_WITH_NULLBYTES);
-		_blob.AddEncodedString(encodingID, _description, TEXT_WITHOUT_ENCODING, TEXT_WITH_NULLBYTES);
+		_blob.AddEncodedString(textCode(), _seller, TEXT_WITHOUT_ENCODING, TEXT_WITH_NULLBYTES);
+		_blob.AddEncodedString(textCode(), _description, TEXT_WITHOUT_ENCODING, TEXT_WITH_NULLBYTES);
 		if (_data.GetLength() > 0)
 		{		
 			_blob.AddEncodedString(TEXT_ENCODED_ANSI, _mime, TEXT_WITHOUT_ENCODING, TEXT_WITH_NULLBYTES);		

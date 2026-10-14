@@ -53,24 +53,35 @@ bool CWMA_Header_Extension::load(FILE *Stream, size_t maxLen)
 	__int64 totalSize = _data.GetR4B(18);
 	__int64 Size;
 	CWMA_Object* obj;
+	// 4.0.4.7: checked reads, each object read from its own position, and false when one was not read whole (the
+	// header is then not written back) (4.0.4.6 and earlier)
+	bool whole = true;
+	__int64 Position = _ftelli64(Stream);
 	while (totalSize > 0)
 	{
-		ATLTRACE(_T(" Item in Extended Header at Pos:%i "), ftell(Stream));
-		fread(&testIID, 1, 16, Stream);
-		fread(&Size, 1, 8, Stream);
+		if (fread(&testIID, 1, 16, Stream) != 16 || fread(&Size, 1, 8, Stream) != 8)
+		{
+			CTools::instance().setLastError(ERR_WMA_PARSE);
+			_data.Clear();
+			return false;
+		}
 		totalSize-= Size;
-		Size-=24;			
-		if (Size < 0 || Size > maxLen)
+		Size-=24;
+		if (Size < 0 || (unsigned __int64)Size > maxLen)
 		{
 			CTools::instance().setLastError(ERR_WMA_PARSE);
 			_data.Clear();
 			return false;
 		}
 		obj = CWMA_ObjectFactory::instance().createObject(testIID);
-		obj->load(Stream, (size_t)Size);
+		if (!obj->load(Stream, (size_t)Size))
+			whole = false;
 		_children.Add(obj);
+		Position += 24 + Size;
+		if (_fseeki64(Stream, Position, SEEK_SET) != 0)
+			return false;
 	}
-	return true;
+	return whole;
 
 }
 

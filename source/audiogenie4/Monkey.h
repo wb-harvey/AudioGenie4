@@ -33,10 +33,11 @@
 #define MONKEY_COMPRESSION_NORMAL      2000                  /* Normal (good) */
 #define MONKEY_COMPRESSION_HIGH        3000               /* High (very good) */
 #define MONKEY_COMPRESSION_EXTRA_HIGH  4000              /* Extra high (best) */
+#define MONKEY_COMPRESSION_INSANE      5000                         /* Insane */
 
 /* Compression level names */
 static const LPCWSTR MONKEY_COMPRESSION[] =
-{ UNKNOWN, _T("Fast"), _T("Normal"), _T("High"), _T("Extra High") };
+{ UNKNOWN, _T("Fast"), _T("Normal"), _T("High"), _T("Extra High"), _T("Insane") };
 
 /* Format flags */
 #define MONKEY_FLAG_8_BIT            1                         /* Audio 8-bit */

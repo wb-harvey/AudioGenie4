@@ -69,9 +69,11 @@ private:
   long oldLen;
   long firstAudioPosition;
   bool mustRebuild;
+  bool blocksDamaged; // the metadata walk ended without a last block (the end of the file, a block past it): not saved
+  bool blockTooBig;   // a block to write is over the 24-bit size limit: not saved
   strBlockHeader BlockHeader;
-  void ReadBlockHeader(FILE *Stream);
-  void ReadBlock(FILE *Stream);
+  bool ReadBlockHeader(FILE *Stream);
+  bool ReadBlock(FILE *Stream, __int64 fileLength);
   void AnalyzeComment();
   void AnalyzeStreamInfo();
   void BuildComment();

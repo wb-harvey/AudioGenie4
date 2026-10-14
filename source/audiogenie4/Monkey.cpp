@@ -69,7 +69,11 @@ CAtlString CMonkey::GetFileVersion()
 CAtlString CMonkey::GetCompression()
 {
   /* Get compression level */
-  return MONKEY_COMPRESSION[Header.CompressionID / 1000];
+  // (Insane, 5000, read past the table, 4.0.4.6 and earlier)
+  int index = Header.CompressionID / 1000;
+  if (index < 0 || index >= (int)(sizeof(MONKEY_COMPRESSION) / sizeof(MONKEY_COMPRESSION[0])))
+    return UNKNOWN;
+  return MONKEY_COMPRESSION[index];
 }
 
 /* -------------------------------------------------------------------------- */
@@ -79,6 +83,9 @@ BYTE CMonkey::GetBits()
   /* Get number of bits per sample */
   if (!IsValid())
     return 0;
+  // 3.98 and later store the bits in the header (their flags aren't read: it said 16 for every file)
+  if (Header.VersionID >= 3980)
+    return (BYTE)Header.BitsPerSample;
   if ((Header.Flags & MONKEY_FLAG_8_BIT) > 0)
     return 8;
   if ((Header.Flags & MONKEY_FLAG_24_BIT) > 0)
@@ -142,7 +149,7 @@ long CMonkey::GetSamplesPerFrame()
 long CMonkey::GetSamples()
 {
   /* Get number of samples */
-  if (!IsValid())
+  if (!IsValid() || Header.Frames <= 0)
     return 0l;
   if (Header.VersionID >=3980)
     return (Header.Frames - 1) * Header.BlocksPerFrame + Header.FinalFrameBlocks;
@@ -168,8 +175,11 @@ float CMonkey::GetCompressionRatio()
   if (!IsValid())
     return 0.0f;
   long compressedSize = CTools::FileSize - CTools::ID3v2Size - CTools::ID3v1Size - CTools::APESize;
-  long uncompressedSize = GetSamples() * GetChannels() * GetBits() / 8l;
-  return (float) compressedSize / ( uncompressedSize + Header.HeaderDataBytes);
+  // (in double: the product overflowed a long for a file of an hour, 4.0.4.6 and earlier)
+  double uncompressedSize = (double)GetSamples() * GetChannels() * GetBits() / 8.0;
+  if (uncompressedSize + Header.HeaderDataBytes <= 0)
+    return 0.0f;
+  return (float) (compressedSize / ( uncompressedSize + Header.HeaderDataBytes));
   //return FileSize /
   //  (GetSamples() * Header.Channels * GetBits() / 8.0f + 44.0f) * 100.0f;
 }
@@ -179,7 +189,7 @@ float CMonkey::GetCompressionRatio()
 long CMonkey::GetBitRate()
 {
   if (GetDuration() > 0)
-    return (long)(GetSamples() * Header.Channels * GetBits() / GetDuration() * GetCompressionRatio()) / 1000l;
+    return (long)((double)GetSamples() * Header.Channels * GetBits() / GetDuration() * GetCompressionRatio() / 1000.0); // (in double, see above)
   else
     return 0;
 }

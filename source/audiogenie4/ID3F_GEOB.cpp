@@ -96,8 +96,8 @@ void CID3F_GEOB::decode()
 			encodingID = _blob.GetAt(0);
 			int start = 1;
 			_mime = _blob.getNextString(TEXT_ENCODED_ANSI, start);
-			_filename = _blob.getNextString(encodingID, start);	
-			_description = _blob.getNextString(encodingID, start);	
+			_filename = _blob.getNextString(textCode(), start);	
+			_description = _blob.getNextString(textCode(), start);	
 			_data.AddBlob(_blob, start);
 		}		
 		isDecoded = true;
@@ -111,8 +111,8 @@ void CID3F_GEOB::encode()
 		_blob.Clear();
 		_blob.AddValue(encodingID);
 		_blob.AddEncodedString(TEXT_ENCODED_ANSI, _mime, TEXT_WITHOUT_ENCODING, TEXT_WITH_NULLBYTES);
-		_blob.AddEncodedString(encodingID, _filename, TEXT_WITHOUT_ENCODING, TEXT_WITH_NULLBYTES);
-		_blob.AddEncodedString(encodingID, _description, TEXT_WITHOUT_ENCODING, TEXT_WITH_NULLBYTES);
+		_blob.AddEncodedString(textCode(), _filename, TEXT_WITHOUT_ENCODING, TEXT_WITH_NULLBYTES);
+		_blob.AddEncodedString(textCode(), _description, TEXT_WITHOUT_ENCODING, TEXT_WITH_NULLBYTES);
 		_blob.AddBlob(_data);
 		mustRebuild = false;		
 	}

@@ -61,7 +61,8 @@ CAtlString CWAVCARTChunk::getASCIIText(BYTE nr)
 	}
 	size_t startPos = CART_CODES[nr][0];
 	size_t maxLen = CART_CODES[nr][1];
-	if (startPos > _data.GetLength() )
+	// 4.0.4.7: the whole field must be in the chunk (a short chunk was read past its end)
+	if (startPos + maxLen > _data.GetLength() )
 		return EMPTY;
 	CAtlString result;
 	if (nr == WAV_CART_LEVELREFERENCE)
@@ -130,11 +131,11 @@ void CWAVCARTChunk::setASCIIText(CAtlString newText, BYTE nr)
 		// Alle Bytes ab Pos 2048 löschen
 		tmp.AddMemory(_data.m_pData, 2048);
 		if (!newText.IsEmpty())
-			tmp.AddEncodedString(TEXT_ENCODED_ANSI, newText, false, false);
+			WAVAddAnsiString(&tmp, newText, false);
 		_data.Clear();
 		_data.AddBlob(tmp);
 		return;
 	}
-	tmp.AddFixedAnsiString(newText, maxLen);
+	WAVAddFixedAnsiString(&tmp, newText, maxLen);
 	memcpy(_data.m_pData + startPos, tmp.m_pData, maxLen);
 }

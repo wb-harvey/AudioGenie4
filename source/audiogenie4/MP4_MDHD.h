@@ -28,7 +28,8 @@ public:
 	~CMP4_MDHD(void);
 	void load(FILE *stream, u32 offset, u32 size);
 	BYTE version;
-	u32 flags, creationTime, modifyTime, timeScale, duration;
+	u32 flags, creationTime, modifyTime, timeScale;
+	unsigned __int64 duration; // 64-bit in a version 1 mdhd
 	WORD language, quality;
 	bool isSoundAtom;
 };

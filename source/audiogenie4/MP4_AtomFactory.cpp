@@ -37,6 +37,7 @@ long CMP4_AtomFactory::lastAudioPos = 0;
 long CMP4_AtomFactory::mediaLength = 0;
 long CMP4_AtomFactory::lastOffset = 0;
 CMP4_MDHD* CMP4_AtomFactory::lastMDHDAtom = NULL;
+bool CMP4_AtomFactory::loadError = false;
 
 CMP4_AtomFactory::CMP4_AtomFactory(void)
 {
@@ -80,8 +81,13 @@ CMP4Atom* CMP4_AtomFactory::createAtom(u32 atomID) const
 	case MP4_STBL: return new CMP4_Container(MP4_STBL);
 	case MP4_STCO: return new CMP4_STCO();
 	case MP4_CO64: return new CMP4_STCO(MP4_CO64);
-	case MP4_TRAK: return new CMP4_Container(MP4_TRAK);
-	case MP4_VMHD: return new CMP4_Container(MP4_VMHD);
+	case MP4_TRAK:
+		// a new track: an smhd in it must not mark the previous track's mdhd (or one already freed) as sound
+		factory->lastMDHDAtom = NULL;
+		return new CMP4_Container(MP4_TRAK);
+	// vmhd is a plain full box (12 data bytes), not a container: read as one, its data was lost on save
+	// (4.0.4.6 and earlier)
+	case MP4_VMHD: return new CMP4Atom(MP4_VMHD);
 	case MP4_SMHD:
 		{
 			if (factory->lastMDHDAtom != NULL)
@@ -117,6 +123,16 @@ CAtlString CMP4_AtomFactory::getText(CMP4Atom* atom)
 	if (version == 0 || version == 21) // Binary Data
 	{
 		CAtlString result;
+		// a big-endian unsigned integer (type 21): only the low byte of 2 was read, 4 came back signed and 8
+		// was read as a track pair (4.0.4.6 and earlier)
+		if (version == 21 && (ln == 2 || ln == 4 || ln == 8) && atom->getFrameID() != 'gnre')
+		{
+			unsigned __int64 value = 0;
+			for (size_t i = 0; i < ln; i++)
+				value = (value << 8) | atom->_blob.m_pData[16 + i];
+			result.Format(_T("%I64u"), value);
+			return result;
+		}
 		if (ln == 1)
 			result.Format(_T("%i"), (BYTE)atom->_blob.m_pData[16]);
 		else if (ln == 2 && atom->getFrameID() == 'gnre')
@@ -126,15 +142,16 @@ CAtlString CMP4_AtomFactory::getText(CMP4Atom* atom)
 				result = MUSIC_GENRE[genreID - 1];
 		}
 		else if (ln == 2)
-			result.Format(_T("%i"), (BYTE)atom->_blob.m_pData[17]);
-		else if (ln == 4)		
+			result.Format(_T("%i"), atom->_blob.Get2B(16));
+		else if (ln == 4)
 			result.Format(_T("%i"), atom->_blob.Get4B(16)); // (BYTE)atom->_blob.m_pData[19]);
 		else if (ln ==6 || ln == 8)
 		{
-			if (atom->_blob.m_pData[21] >  0)
-				result.Format(_T("%i/%i"), (BYTE)atom->_blob.m_pData[19], (BYTE)atom->_blob.m_pData[21]);
+			// track/disc number and count are 16-bit: above 255 only the low byte was read (4.0.4.6 and earlier)
+			if (atom->_blob.Get2B(20) >  0)
+				result.Format(_T("%i/%i"), atom->_blob.Get2B(18), atom->_blob.Get2B(20));
 			else
-				result.Format(_T("%i"), (BYTE)atom->_blob.m_pData[19]);
+				result.Format(_T("%i"), atom->_blob.Get2B(18));
 		}
 		else  // unbekannte Länge, was nun ?
 					// unknown length -> what can we do?
@@ -152,7 +169,34 @@ CAtlString CMP4_AtomFactory::getText(CMP4Atom* atom)
 	return EMPTY;
 }
 
-void CMP4_AtomFactory::setText(CMP4Atom *atom, CAtlString newText)
+// The width of an integer item (type 21), 0 for any other item. Written as UTF-8 text (type 1), players did not
+// read these, and tmpo kept only its low byte (4.0.4.6 and earlier).
+static int IntegerItemSize(u32 id)
+{
+	switch (id)
+	{
+	case 'cpil': case 'pgap': case 'pcst': case 'stik': case 'rtng': case 'hdvd': case 'shwm': case 'akID':
+		return 1;
+	case 'tmpo':
+		return 2;
+	case 'tvsn': case 'tves': case 'cnID': case 'atID': case 'geID': case 'sfID': case 'cmID':
+		return 4;
+	case 'plID':
+		return 8;
+	}
+	return 0;
+}
+
+// a 16-bit number for a track or disc pair
+static int PairValue(CAtlString text)
+{
+	int value = _wtoi(text);
+	return (value < 0) ? 0 : (value > 0xFFFF) ? 0xFFFF : value;
+}
+
+// false (and the atom left as it was) for an item this can't write: SetILSTText then replaced the item with an
+// empty atom, wiping it, and an empty covr was then read as a picture container and crashed (4.0.4.6 and earlier)
+bool CMP4_AtomFactory::setText(CMP4Atom *atom, CAtlString newText)
 {
 	u32 id = atom->getFrameID();
 	CBlob tmp;
@@ -160,40 +204,36 @@ void CMP4_AtomFactory::setText(CMP4Atom *atom, CAtlString newText)
 	if (id == 'trkn' || id == 'gnre')
 	{
 		CTools::instance().writeError(_T("don't use MP4SetTextFrameW with trkn frame or gnre frame. Use MP4SetTrackW or MP4SetGenreW instead!"));
-		return;
+		return false;
 	}
 	if (id == 'covr')
 	{
 		CTools::instance().writeError(_T("don't use MP4SetTextFrameW with 'covr' frame. Use MP4AddPictureArrayW or MP4AddPictureFileW instead!"));
-		return;
+		return false;
 	}
-	if (id == 'cpil' || id == 'pgap' || id == 'pcst') // 1 Databyte
-	{
-		type = 21;	
-		tmp.AddValue((BYTE)_wtoi(newText));
-	}
-	else if (id == 'tmpo') // 2 Databyte
+	int intSize = IntegerItemSize(id);
+	if (intSize > 0) // big-endian, intSize bytes
 	{
 		type = 21;
-		tmp.AddNullByte();
-		tmp.AddValue((BYTE)_wtoi(newText));		
+		unsigned __int64 value = (unsigned __int64)_wtoi64(newText);
+		for (int i = intSize - 1; i >= 0; i--)
+			tmp.AddValue((BYTE)(value >> (i * 8)));
 	}
 	else if (id == 'disk') // 6 Byte x/y
 	{
-		type = 0;	
+		type = 0;
 		int pos = newText.Find('/');
-		tmp.AddValue(0, 3);
+		tmp.AddValue(0, 2);
 		if (pos == -1) // not found
 		{
-			tmp.AddValue((BYTE)_wtoi(newText));	
+			tmp.Add2B(PairValue(newText));
 			tmp.AddValue(0, 2);
-		}			
+		}
 		else
 		{
-			tmp.AddValue((BYTE)_wtoi(newText.Left(pos)));
-			tmp.AddNullByte();
-			tmp.AddValue((BYTE)_wtoi(newText.Mid(pos + 1)));			
-		}	
+			tmp.Add2B(PairValue(newText.Left(pos)));
+			tmp.Add2B(PairValue(newText.Mid(pos + 1)));
+		}
 	}
 	else if (id == 'purl' || id == 'egid')
 	{
@@ -208,21 +248,17 @@ void CMP4_AtomFactory::setText(CMP4Atom *atom, CAtlString newText)
 		
 	buildData(atom,(int)tmp.GetLength(), type);
 	atom->_blob.AddMemory(tmp.m_pData, tmp.GetLength());
+	return true;
 }
 
-void CMP4_AtomFactory::setTrack(CMP4Atom *atom, BYTE von, BYTE bis)
+// number and count are 16-bit (they were written as one byte each, 4.0.4.6 and earlier)
+void CMP4_AtomFactory::setTrack(CMP4Atom *atom, int von, int bis)
 {
 	buildData(atom, 8, 0);
-	atom->_blob.AddValue(0, 3);
-	atom->_blob.AddValue(von);
-	if (bis > 0)
-	{
-		atom->_blob.AddNullByte();
-		atom->_blob.AddValue(bis);
-		atom->_blob.AddValue(0, 2);
-	}
-	else 
-		atom->_blob.AddValue(0, 4);
+	atom->_blob.AddValue(0, 2);
+	atom->_blob.Add2B(von);
+	atom->_blob.Add2B(bis > 0 ? bis : 0);
+	atom->_blob.AddValue(0, 2);
 }
 
 void CMP4_AtomFactory::buildData(CMP4Atom *atom, int length, BYTE flag)

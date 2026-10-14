@@ -58,7 +58,8 @@ CAtlString CWAVBEXTChunk::getASCIIText(BYTE nr)
 	}
 	size_t startPos = BEXT_CODES[nr][0];
 	size_t maxLen = BEXT_CODES[nr][1];
-	if (startPos > _data.GetLength() )
+	// 4.0.4.7: the whole field must be in the chunk (a short chunk was read past its end)
+	if (startPos + maxLen > _data.GetLength() )
 		return EMPTY;
 	CAtlString result;
 	if (nr == WAV_BEXT_TIMEREFERENCE)
@@ -114,11 +115,11 @@ void CWAVBEXTChunk::setASCIIText(CAtlString newText, BYTE nr)
 		// Alle Bytes ab Pos 602 löschen
 		tmp.AddMemory(_data.m_pData, startPos);
 		if (!newText.IsEmpty())
-			tmp.AddEncodedString(TEXT_ENCODED_ANSI, newText, false, false);
+			WAVAddAnsiString(&tmp, newText, false);
 		_data.Clear();
 		_data.AddBlob(tmp);
 		return;
 	}
-	tmp.AddFixedAnsiString(newText, maxLen);
+	WAVAddFixedAnsiString(&tmp, newText, maxLen);
 	memcpy(_data.m_pData + startPos, tmp.m_pData, maxLen);
 }

@@ -86,8 +86,8 @@ void CID3F_TXXX::decode()
 			if (_blob.GetLength() > 1)
 			{
 				int start = 1;
-				_description = _blob.getNextString(encodingID, start);	
-				_text = _blob.getNextString(encodingID, start);			
+				_description = _blob.getNextString(textCode(), start);	
+				_text = _blob.getNextString(textCode(), start);			
 			}
 		}
 		isDecoded = true;
@@ -99,8 +99,8 @@ void CID3F_TXXX::encode()
 	{
 		decode();
 		_blob.Clear();
-		_blob.AddEncodedString(encodingID, _description, TEXT_WITH_ENCODING, TEXT_WITH_NULLBYTES);
-		_blob.AddEncodedString(encodingID, _text, TEXT_WITHOUT_ENCODING, TEXT_WITHOUT_NULLBYTES);
+		_blob.AddEncodedString(textCode(), _description, TEXT_WITH_ENCODING, TEXT_WITH_NULLBYTES);
+		_blob.AddEncodedString(textCode(), _text, TEXT_WITHOUT_ENCODING, TEXT_WITHOUT_NULLBYTES);
 		mustRebuild = false;
 	}
 }

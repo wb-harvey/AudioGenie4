@@ -21,6 +21,8 @@
 #pragma once
 #include "Blob.h"
 
+typedef unsigned __int32  u32;
+
 class CFlacCover
 {
 public:
@@ -42,9 +44,12 @@ public:
 	CAtlString getPictureTypeAsText();
 	bool setPictureFile(LPCWSTR fileName);
 	bool setFileLink(LPCWSTR fileName);
+	void setPictureArray(const BYTE *arr, u32 len);
 	CAtlString getMime();
 	void CFlacCover::Save(CBlob * destination);
+	bool isValid() { return _valid; }; // false: a PICTURE block whose lengths run past its end
 private:
+	bool _valid;
 	bool _isLink;
 	CAtlString _mime;
 	CAtlString _pictureLink;

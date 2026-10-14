@@ -24,6 +24,7 @@
 #include "wavcartchunk.h"
 #include "WAVDISPChunk.h"
 #include "WAVBEXTChunk.h"
+#include "WAVDataChunk.h"
 
 class CWAVRIFFContainer :
 	public CWAVContainer
@@ -43,7 +44,15 @@ public:
 	CWAVDISPChunk* addDispChunk();
 	CWAVDISPChunk* getDispChunk();
 	CWAVBEXTChunk* addBextChunk();
-	CWAVBEXTChunk* getBextChunk();	
+	CWAVBEXTChunk* getBextChunk();
+	CWAVDataChunk* getDataChunk();
+	unsigned __int64 getSize64();
+	// 4.0.4.7: a chunk that could not be read whole (saving it would write it short)
+	bool hasLoadErrors() { return _loadErrors; };
+	// 4.0.4.7: where the chunk walk stopped; the bytes from here on are not part of the RIFF chunks
+	unsigned __int64 getWalkEnd() { return _walkEnd; };
 private:
 	CWAVFormatChunk *formatChunk;
+	bool _loadErrors;
+	unsigned __int64 _walkEnd;
 };

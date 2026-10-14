@@ -28,6 +28,8 @@
 #include "mp4.h"
 #include <io.h>
 #include <memory.h>
+#include <limits.h>
+#include <errno.h>
 #include <fcntl.h>
 #include "resource.h"
 #include <share.h>
@@ -61,11 +63,17 @@ void CMP4::ResetData()
 	CMP4_AtomFactory::mediaLength = 0;
 	CMP4_AtomFactory::firstAudioPos = 0;
 	CMP4_AtomFactory::lastAudioPos = 0;
+	// the mdhd it points to was freed with the tree: an smhd in the next file wrote through it (4.0.4.6 and earlier)
+	CMP4_AtomFactory::lastMDHDAtom = NULL;
+	CMP4_AtomFactory::loadError = false;
 }
 
 bool CMP4::ReadFromFile(FILE *Stream)
 {
 	//ResetData();
+	CMP4_AtomFactory::lastMDHDAtom = NULL;
+	CMP4_AtomFactory::loadError = false;
+	CMP4_AtomFactory::instance()->ebene = 0;
 	CMP4_AtomFactory::lastAudioPos = CTools::FileSize;
 	/* Read file data */
 	//fseek(Stream, CTools::ID3v2Size, SEEK_SET);
@@ -77,7 +85,7 @@ CAtlString CMP4::GetFileVersion()
 {
 	// Hole ftyp atom
 	CMP4Atom* atom = mainContainer->find(FTYP_PFAD);
-	if (atom == NULL)
+	if (atom == NULL || atom->_blob.GetLength() < 4) // an empty ftyp was read past its end
 		return UNKNOWN;
 	int majortype = atom->_blob.Get4B(0); // major type
 	for (int i = 0; i < 49; i++)
@@ -109,7 +117,28 @@ CAtlString CMP4::GetPictureMime(int Index)
 		atom = cont->_children[Index - 1];
 	else
 		return L"";
-	return (atom->_blob.Get4B(0) == 14) ? _T("png") : _T("jpg");
+	// by the picture's own bytes first: the type was the only guide, and any but 14 (PNG) read as jpg; an empty
+	// data atom was read past its end (4.0.4.6 and earlier)
+	size_t len = atom->_blob.GetLength();
+	if (len < 4)
+		return L"";
+	const BYTE *pic = atom->_blob.m_pData + 8;
+	if (len >= 12 && pic[0] == 0xFF && pic[1] == 0xD8)
+		return _T("jpg");
+	if (len >= 16 && pic[0] == 0x89 && pic[1] == 'P' && pic[2] == 'N' && pic[3] == 'G')
+		return _T("png");
+	if (len >= 16 && pic[0] == 'G' && pic[1] == 'I' && pic[2] == 'F' && pic[3] == '8')
+		return _T("gif");
+	if (len >= 10 && pic[0] == 'B' && pic[1] == 'M')
+		return _T("bmp");
+	long type = atom->_blob.Get4B(0);
+	if (type == 14)
+		return _T("png");
+	if (type == 12)
+		return _T("gif");
+	if (type == 27)
+		return _T("bmp");
+	return _T("jpg");
 }
 
 long CMP4::GetPictureSize(int Index)
@@ -123,9 +152,10 @@ long CMP4::GetPictureSize(int Index)
 	if (Index <= (int)cont->_children.GetCount())
 	{
 		atom = cont->_children[Index - 1];
-		return (long)atom->_blob.GetLength() - 8;
+		long ln = (long)atom->_blob.GetLength() - 8;
+		return (ln > 0) ? ln : 0; // a data atom shorter than its 8-byte header gave a negative size
 	}
-	return 0;	
+	return 0;
 }
 
 bool CMP4::GetPicture(LPCWSTR file, int Index)
@@ -139,6 +169,10 @@ bool CMP4::GetPicture(LPCWSTR file, int Index)
 	if (Index <= (int)cont->_children.GetCount())
 		atom = cont->_children[Index - 1];
 	else
+		return false;
+	// a data atom shorter than its 8-byte header: the negative length went to fwrite as about 4 GB (4.0.4.6 and
+	// earlier)
+	if (atom->_blob.GetLength() < 8)
 		return false;
 	// aus Speicher in File schreiben
 	// write file from memory to disc
@@ -164,14 +198,26 @@ bool CMP4::AddPictureFile(LPCWSTR FileName)
 		return false;
 	}
 	long length = _filelength(_fileno(Stream));
+	if (length <= 0)
+	{
+		fclose(Stream);
+		CTools::instance().setLastError(ERR_INVALID_FORMAT);
+		return false;
+	}
 	CBlob arr(length);
 	arr.FileRead(length, Stream);
 	fclose(Stream);
-	return AddPictureArray(arr.m_pData, length);
+	return AddPictureArray(arr.m_pData, (u32)arr.GetLength());
 }
 
 bool CMP4::AddPictureArray(BYTE *arr, u32 length)
 {
+	// an empty picture: arr[0..3] were read past its end
+	if (arr == NULL || length < 4)
+	{
+		CTools::instance().setLastError(ERR_PICTUREARRAY_TOO_SMALL);
+		return false;
+	}
 	mainContainer->checkMetaBox();
 	CMP4Atom* atom = mainContainer->find(COVR_PFAD);
 	CMP4_Container *cont;
@@ -236,6 +282,8 @@ long CMP4::GetPictureArray(BYTE *destination, long maxLen, short Index)
 	// 0D (13) = jpeg ,  0E (14) = png
 	// 4 bytes reserved = 32-bit value set to zero
 	long ln =(long)atom->_blob.GetLength() - 8;
+	if (ln < 0) // shorter than its 8-byte header
+		ln = 0;
 	if (ln > maxLen)
 	{
 		CTools::instance().setLastError(ERR_NOT_ENOUGH_MEMORY);
@@ -279,7 +327,12 @@ void CMP4::SetILSTText(u32 FrameID, CAtlString newText)
 	}
 	CMP4Atom* atom = new CMP4Atom(FrameID);
 	atom->setParent(ILST_PFAD);
-	CMP4_AtomFactory::instance()->setText(atom, newText);
+	// trkn, gnre, covr: setText refuses, and the empty atom replaced (wiped) the item (4.0.4.6 and earlier)
+	if (!CMP4_AtomFactory::instance()->setText(atom, newText))
+	{
+		delete atom;
+		return;
+	}
 	mainContainer->checkMetaBox();
 	mainContainer->replaceAtom(atom);
 }
@@ -363,10 +416,13 @@ CAtlString CMP4::GetTrack()
 	if (atom == NULL || atom->_blob.GetLength() < 20)
 		return L"";
 	CAtlString tmp;
-	if (atom->getDataLen() >= 22 && atom->_blob.GetAt(21) > 0)
-		tmp.Format(_T("%i/%i"), atom->_blob.GetAt(19), atom->_blob.GetAt(21));
+	// number and count are 16-bit: above 255 only the low byte was read (4.0.4.6 and earlier)
+	int von = atom->_blob.Get2B(18);
+	int bis = (atom->_blob.GetLength() >= 22) ? atom->_blob.Get2B(20) : 0;
+	if (bis > 0)
+		tmp.Format(_T("%i/%i"), von, bis);
 	else
-		tmp.Format(_T("%i"), atom->_blob.GetAt(19));
+		tmp.Format(_T("%i"), von);
 	return tmp;
 }
 
@@ -382,15 +438,18 @@ void CMP4::SetTrack(LPCWSTR newTrack)
 	// Format entweder als eine Zahl oder als zwei Zahlen mit / getrennt
 	// format either as number or two numbers separated by /
 	CAtlString info(newTrack);
-	BYTE von = 0, bis = 0;
+	// 16-bit, as in the file: a track above 255 was cut to its low byte (4.0.4.6 and earlier)
+	int von = 0, bis = 0;
 	int pos = info.Find('/');
 	if (pos == -1) // not found
-		von = (BYTE)_wtoi(newTrack) ;	
+		von = _wtoi(newTrack) ;
 	else
 	{
-		von = (BYTE)_wtoi(info.Left(pos));
-		bis = (BYTE)_wtoi(info.Mid(pos + 1));
+		von = _wtoi(info.Left(pos));
+		bis = _wtoi(info.Mid(pos + 1));
 	}
+	von = (von < 0) ? 0 : (von > 0xFFFF) ? 0xFFFF : von;
+	bis = (bis < 0) ? 0 : (bis > 0xFFFF) ? 0xFFFF : bis;
 	CMP4Atom* atom = new CMP4Atom(ILST_TRKN);
 	atom->setParent(ILST_PFAD);
 	CMP4_AtomFactory::instance()->setTrack(atom, von, bis);
@@ -495,11 +554,17 @@ float CMP4::GetDuration()
 	int start = 1;
 	float duration = 0.0;
 	CMP4_MDHD* atom;
+	// the longest sound track: the tracks play side by side, and summing them doubled a file with two
+	// (4.0.4.6 and earlier)
 	while ( (atom = cMDHD(mainContainer->find(MDHD_PFAD, start))) != NULL)
 	{
 		if (atom->isSoundAtom && atom->duration > 0 && atom->timeScale > 0)
-			duration+= (float)atom->duration / (float)atom->timeScale;
-		start++;		
+		{
+			float trackDuration = (float)((double)atom->duration / (double)atom->timeScale);
+			if (trackDuration > duration)
+				duration = trackDuration;
+		}
+		start++;
 	}
 	return duration;
 }
@@ -508,6 +573,29 @@ void CMP4::RemoveTag()
 {
 	mainContainer->removeAtom(_T("moov.udta"));	
 }
+
+// SaveToFile loads the file again into a tree of its own, through the same statics as the file's own load: on
+// every save, mediaLength grew by that copy's media data (the bit rate doubled after saving to another file),
+// and lastMDHDAtom was left pointing into the deleted tree (4.0.4.6 and earlier). They are put back on return.
+struct CMP4LoadStatics
+{
+	long firstAudioPos, lastAudioPos, mediaLength, lastOffset;
+	CMP4LoadStatics()
+	{
+		firstAudioPos = CMP4_AtomFactory::firstAudioPos;
+		lastAudioPos = CMP4_AtomFactory::lastAudioPos;
+		mediaLength = CMP4_AtomFactory::mediaLength;
+		lastOffset = CMP4_AtomFactory::lastOffset;
+	}
+	~CMP4LoadStatics()
+	{
+		CMP4_AtomFactory::firstAudioPos = firstAudioPos;
+		CMP4_AtomFactory::lastAudioPos = lastAudioPos;
+		CMP4_AtomFactory::mediaLength = mediaLength;
+		CMP4_AtomFactory::lastOffset = lastOffset;
+		CMP4_AtomFactory::lastMDHDAtom = NULL;
+	}
+};
 
 bool CMP4::SaveToFile(LPCWSTR FileName)
 {
@@ -522,20 +610,30 @@ bool CMP4::SaveToFile(LPCWSTR FileName)
 		CTools::instance().setLastError(errno);
 		return false;
 	}
-	// Alte Taggings sichern
-	// save old tags
-	CMP4Atom *oldTaggings = NULL, *atom = NULL;
-	atom = mainContainer->find(ILST_PFAD);
-	if (atom != NULL)
+	// Positions and sizes here are 32-bit: from 2 GB on they went negative and the media data was not copied at
+	// all (4.0.4.6 and earlier)
+	__int64 fileLength = _filelengthi64(_fileno(Source));
+	if (fileLength < 0 || fileLength > LONG_MAX)
 	{
-		oldTaggings = atom->copy();
+		CTools::instance().setLastError(ERR_FRAME_TOO_BIG);
+		fclose(Source);
+		return false;
 	}
-	fseek(Source, CTools::ID3v2Size, SEEK_SET);
-	CTools::FileSize = _filelength(_fileno(Source));
+	// the target's own length, kept local: CTools::FileSize is the analyzed file's, and saving to another file
+	// left it stale (4.0.4.6 and earlier)
+	long fileSize = (long)fileLength;
+	CMP4LoadStatics keepStatics;
+	CMP4_AtomFactory::lastMDHDAtom = NULL;
+	CMP4_AtomFactory::loadError = false;
+	CMP4_AtomFactory::instance()->ebene = 0;
 	CMP4_MainContainer *newData = new CMP4_MainContainer();
-	newData->load(Source, CTools::ID3v2Size, CTools::FileSize - CTools::ID3v1Size);
-	atom = newData->find(MDAT_PFAD);
-	if (atom == NULL)
+	newData->load(Source, CTools::ID3v2Size, fileSize - CTools::ID3v1Size);
+	CMP4Atom *atom = newData->find(MDAT_PFAD);
+	// Only one mdat is copied (the first): with more, or a fragmented file (moof, mvex), the other media data
+	// was left out and the audio lost. A tree whose load stopped early would drop the atoms not read.
+	// (4.0.4.6 and earlier)
+	if (atom == NULL || CMP4_AtomFactory::loadError || newData->find(MDAT_PFAD, 2) != NULL ||
+		newData->find(_T("moof")) != NULL || newData->find(_T("moov.mvex")) != NULL)
 	{
 		CTools::instance().setLastError(ERR_INVALID_FORMAT);
 		delete newData;
@@ -552,16 +650,20 @@ bool CMP4::SaveToFile(LPCWSTR FileName)
 	if (atom != NULL)
 		newData->removeAtom(atom);
 	newData->removePadding();
-	if (oldTaggings != NULL)
+	// Alte Taggings sichern
+	// save old tags (copied here, where newData takes them: copied first, they leaked on every early return)
+	atom = mainContainer->find(ILST_PFAD);
+	if (atom != NULL)
 	{
 		newData->checkMetaBox();
-		newData->replaceAtom(oldTaggings);
+		newData->replaceAtom(atom->copy());
 	}
 	else
-	{	
-		// Keine Tagging daten gewünscht	
-		// no tagging data desired
-		newData->removeAtom(_T("moov.udta"));
+	{
+		// Keine Tagging daten gewuenscht
+		// no tagging data desired: only the item list goes. All of moov.udta went with it, chapters, GPS and
+		// other user data too (4.0.4.6 and earlier).
+		newData->removeAtom(ILST_PFAD);
 	}
 	u32 sizeAfter = newData->getSize();
 	long paddingBlockSize = CTools::configValues[CONFIG_MP4PADDINGSIZE];
@@ -573,30 +675,63 @@ bool CMP4::SaveToFile(LPCWSTR FileName)
 	u32 freed = (sizeAfter <= sizeBefore) ? sizeBefore - sizeAfter : 0;
 
 	if (sizeAfter > sizeBefore || optimalSize < sizeBefore || paddingBlockSize == 0 || (freed > 0 && freed <= 8))
-	{ 
-		CTools::instance().writeDebug(_T("Rebuild mp4 tag")); 
+	{
+		CTools::instance().writeDebug(_T("Rebuild mp4 tag"));
 		mdat->setSameFile(false);
+		// the new file must stay below 2 GB as well
+		if ((__int64)fileSize - sizeBefore + sizeAfter + (paddingBlockSize > 0 ? paddingBlockSize : 0) > LONG_MAX)
+		{
+			CTools::instance().setLastError(ERR_FRAME_TOO_BIG);
+			delete newData;
+			fclose(Source);
+			return false;
+		}
 		// rebuild File
 		NewFileName+=TILDE;
 		/* Create file streams */
 		if ( (Destination = _wfsopen(NewFileName, WRITE_ONLY, _SH_DENYWR)) == NULL)
 		{
-			delete newData;		
+			delete newData;
 			CTools::instance().setLastError(errno);
 			fclose(Source);
 			return false;
 		};
+		// Every write is checked, only this save's own streams are closed (_fcloseall closed every stream the
+		// process had open), and the copy replaces the original in one step only when complete. The original
+		// was deleted first and the copy renamed after, unchecked: a failed write or rename lost the file or
+		// left it only in "name~" (4.0.4.6 and earlier).
+		errno = 0;
+		bool copied = true;
+		// Keep a leading ID3v2 tag: the rebuilt file started at ftyp, and the tag was lost (4.0.4.6 and earlier).
+		// mdat's new position counts it, so the chunk offsets below move by the right amount.
+		if (CTools::ID3v2Size > 0)
+		{
+			CBlob prefix;
+			if (fseek(Source, 0, SEEK_SET) != 0)
+				copied = false;
+			else
+			{
+				prefix.FileRead(CTools::ID3v2Size, Source);
+				if ((long)prefix.GetLength() != CTools::ID3v2Size)
+					copied = false;
+				else if (prefix.GetLength() >= 3 && memcmp(prefix.m_pData, "ID3", 3) == 0 && prefix.FileWrite(prefix.GetLength(), Destination) != prefix.GetLength())
+					copied = false;
+			}
+		}
 		/* adjust padding: a free atom of paddingBlockSize bytes after moov */
 		if (paddingBlockSize >= 8)
 			newData->addPadding((u32)paddingBlockSize - 8);
 		/* Copy atom blocks */
-		newData->save(Destination);
-		_flushall();
+		if (copied)
+		{
+			newData->save(Destination);
+			if (mdat->failed() || fflush(Destination) != 0 || ferror(Destination))
+				copied = false;
+		}
 		/* if mdat moved, move every track's chunk offsets (stco, or co64 in large files) with it */
-		CMP4_MDAT* mdat = cMDAT(newData->find(MDAT_PFAD));
 		// Indizes richten
 		// align indices
-		if (mdat != NULL && mdat->getPosition() != oldMDATPosition)
+		if (copied && mdat->getPosition() != oldMDATPosition)
 		{
 			long delta = mdat->getPosition() - oldMDATPosition;
 			for (int n = 1; ; n++)
@@ -613,43 +748,56 @@ bool CMP4::SaveToFile(LPCWSTR FileName)
 					break;
 				cSTCO(offsets)->move(delta, Destination);
 			}
-			_flushall();
 		}
-		_fcloseall();
+		if (fflush(Destination) != 0 || ferror(Destination))
+			copied = false;
+		if (fclose(Destination) != 0)
+			copied = false;
+		fclose(Source);
 		delete newData;
-		/* Replace old file and delete temporary file */
-		CTools::instance().doEventsNow();
-		if (_wremove(FileName) != 0)
+		if (!copied)
 		{
-			// Lösche auch temp file
-			// delete the temp file
-			_wremove(NewFileName);
-			CTools::instance().setLastError(errno);
+			int err = (errno != 0) ? errno : EIO;
+			_wremove(NewFileName); // the original is untouched
+			CTools::instance().setLastError(err);
 			return false;
 		}
+		/* Replace the original with the copy in one step: it is either the old file or the new one, never missing */
 		CTools::instance().doEventsNow();
-		if (_wrename(NewFileName, FileName) != 0)
+		if (!MoveFileExW(NewFileName, FileName, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
 		{
-			CTools::instance().setLastError(errno);
+			DWORD err = GetLastError();
+			_wremove(NewFileName);
+			CTools::instance().setLastError(err == ERROR_ACCESS_DENIED || err == ERROR_SHARING_VIOLATION ? EACCES : EIO);
 			return false;
 		}
 		return true;
 	}
-	CTools::instance().writeDebug(_T("Rewrite mp4 tag")); 
+	CTools::instance().writeDebug(_T("Rewrite mp4 tag"));
 	mdat->setSameFile(false);
 	// Passe Padding an
+	// Checked by this save's own stream (errno also caught unrelated errors), and only that stream is closed:
+	// _fcloseall closed every stream the process had open (4.0.4.6 and earlier)
 	errno = 0;
+	bool written = true;
 	if (freed > 0)
 		newData->addPadding(freed - 8);	// the free atom's 8-byte header is part of what it fills
-	fseek(Source, CTools::ID3v2Size, SEEK_SET);
-	newData->save(Source);
-	_flushall();
-	_fcloseall();
-	newData->remove();
-	delete newData;
-	if (errno != 0)
+	if (fseek(Source, CTools::ID3v2Size, SEEK_SET) != 0)
+		written = false;
+	else
 	{
-		CTools::instance().setLastError(errno);
+		newData->save(Source);
+		if (mdat->failed())
+			written = false;
+	}
+	if (fflush(Source) != 0 || ferror(Source))
+		written = false;
+	if (fclose(Source) != 0)
+		written = false;
+	delete newData;
+	if (!written)
+	{
+		CTools::instance().setLastError(errno != 0 ? errno : EIO);
 		return false;
 	}
 	return true;

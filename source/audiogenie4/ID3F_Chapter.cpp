@@ -31,7 +31,7 @@ CID3F_Chapter::CID3F_Chapter(void)
 
 CID3F_Chapter::~CID3F_Chapter(void)
 {
-	_frames.RemoveAll();
+	deleteAllFrames(); // 4.0.4.7: the sub-frames were never deleted, a leak (4.0.4.6 and earlier)
 }
 bool CID3F_Chapter::equals(CID3_Frame *frame)
 {
@@ -56,8 +56,12 @@ CAtlString CID3F_Chapter::getDescription()
 	decode();
 	return _description;
 }
+// 4.0.4.7: decode first, and the chapter is rebuilt: a change made after a first save was not written, and a change
+// to a chapter not decoded yet was overwritten by its decode (4.0.4.6 and earlier)
 void CID3F_Chapter::addFrame(CID3_Frame* frame)
 {
+	decode();
+	mustRebuild = true;
 	size_t count = _frames.GetCount();
 	for (size_t i = 0; i < count; i++)
 	{
@@ -73,6 +77,8 @@ void CID3F_Chapter::addFrame(CID3_Frame* frame)
 
 void CID3F_Chapter::deleteFrame(u32 ID)
 {
+	decode();
+	mustRebuild = true;
 	int count = (int)_frames.GetCount();
 	while (--count >= 0)
 	{
@@ -90,6 +96,7 @@ void CID3F_Chapter::deleteAllFrames()
 	while (--count >= 0)
 		delete _frames[count];
 	_frames.RemoveAll();
+	mustRebuild = true;
 }
 
 CID3_Frame* CID3F_Chapter::findFrame(u32 ID, int index)
@@ -118,9 +125,13 @@ void CID3F_Chapter::convertBlobToFrames()
 	bool foundTitle = false, foundDescription = false;
 	u32 frameID, frameSize;
 	CID3_Frame *frame;
-	while (start < _data.GetLength())
+	// 4.0.4.7: a sub-frame header needs 10 bytes and its data must fit in what is left; both were read past the data,
+	// and padding (frame ID 0) was read as frames (4.0.4.6 and earlier)
+	while (start + 10 <= _data.GetLength())
 	{
 		frameID = (u32)_data.Get4B(start);
+		if (frameID == 0)
+			break;
 		if (CTools::ID3V2oldTagVersion == TAG_VERSION_2_4) // SyncSafe Integer
 			frameSize = (u32)_data.GetS4B(start + 4);
 		else
@@ -128,7 +139,7 @@ void CID3F_Chapter::convertBlobToFrames()
 		flags = _data.Get2B(start + 8);
 		start+=10;
 		// Sicherheitsabfrage auf Grösse des Frames
-		if (frameSize > (u32)CTools::ID3v2Size)
+		if (frameSize > _data.GetLength() - start)
 		{
 			CTools::instance().setLastError(ERR_CHAPTER_FRAME_CORRUPT);
 			start = _data.GetLength();		}
@@ -136,20 +147,24 @@ void CID3F_Chapter::convertBlobToFrames()
 		{
 			frame = CID3_FrameFactory::instance().createFrame(frameID);
 			frame->flags = flags;
+			// 4.0.4.7: a chapter resynced as a whole: its sub-frames are not resynced again
+			frame->isResynced = isResynced;
 			frame->load(_data.m_pData + start, frameSize);
 			frame->print();
-			if (!foundTitle && frameID == F_TIT2)
+			// 4.0.4.7: TIT2 and TIT3 stay sub-frames too. They were only copied to _title/_description, so every save
+			// dropped the chapter names (encode writes _frames), and the frames leaked (4.0.4.6 and earlier).
+			CID3F_T000 *text = dynamic_cast<CID3F_T000*>(frame);
+			if (!foundTitle && frameID == F_TIT2 && text != NULL)
 			{
-				_title = (cT000(frame))->getText();
+				_title = text->getText();
 				foundTitle = true;
 			}
-			else if (!foundDescription && frameID == F_TIT3)
+			else if (!foundDescription && frameID == F_TIT3 && text != NULL)
 			{
-				_description = (cT000(frame))->getText();
+				_description = text->getText();
 				foundDescription = true;
 			}
-			else 
-				_frames.Add(frame);
+			_frames.Add(frame);
 			start+=frameSize;
 		}
 	}
@@ -198,18 +213,20 @@ CAtlString CID3F_Chapter::getFrameText(u16 index)
 {
 	decode();
 	BYTE typ = getFrameTyp(index);
+	// 4.0.4.7: a frame of an unknown ID (base class) was cast to the text or URL class: undefined behavior (4.0.4.6 and earlier)
+	CID3_Frame *f = (typ != 0) ? _frames[index - 1] : NULL;
 	switch (typ)
 	{
 	case 1:
-		return cT000(_frames[index - 1])->getText();
+		return dynamic_cast<CID3F_T000*>(f) ? cT000(f)->getText() : EMPTY;
 	case 2:
-		return cTXXX(_frames[index - 1])->getText();
+		return dynamic_cast<CID3F_TXXX*>(f) ? cTXXX(f)->getText() : EMPTY;
 	case 3:
-		return cW000(_frames[index - 1])->getURL();
+		return dynamic_cast<CID3F_W000*>(f) ? cW000(f)->getURL() : EMPTY;
 	case 4:
-		return cWXXX(_frames[index - 1])->getURL();
+		return dynamic_cast<CID3F_WXXX*>(f) ? cWXXX(f)->getURL() : EMPTY;
 	case 5:
-		return cAPIC(_frames[index - 1])->getDescription();
+		return dynamic_cast<CID3F_APIC*>(f) ? cAPIC(f)->getDescription() : EMPTY;
 	default:
 		return EMPTY;
 	}

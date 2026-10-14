@@ -29,6 +29,8 @@ CWAVRIFFContainer::CWAVRIFFContainer(void)
 {
 	formatChunk = NULL;
 	_chunkID = 0;
+	_loadErrors = false;
+	_walkEnd = 0;
 }
 
 CWAVRIFFContainer::~CWAVRIFFContainer(void)
@@ -40,19 +42,49 @@ CWAVRIFFContainer::~CWAVRIFFContainer(void)
 
 bool CWAVRIFFContainer::save(FILE* Source, FILE *Destination)
 {
-	if (getSize() > 0)
+	// 4.0.4.7: every write checked; the size in 64 bits (a RIFF size over 4 GB can't be written)
+	unsigned __int64 total = getSize64();
+	if (total - 8 > 0xFFFFFFFF)
+		return false;
+	CBlob blob;
+	blob.Add4B('RIFF');
+	blob.AddR4B((u32)(total - 8));
+	blob.Add4B('WAVE');
+	if (blob.FileWrite(blob.GetLength(), Destination) != blob.GetLength())
+		return false;
+	size_t counts = _children.GetCount();
+	for (size_t i = 0; i < counts; i++)
 	{
-		CBlob *blob = new CBlob(getSize() + 12);
-		blob->Add4B('RIFF');
-		blob->AddR4B((u32)getSize() - 8);
-		blob->Add4B('WAVE');
-		blob->FileWrite(blob->GetLength(), Destination);
-		delete blob;
-		size_t counts = _children.GetCount();
-		for (size_t i = 0; i < counts; i++)
-			_children[i]->save(Source, Destination);		
+		if (!_children[i]->save(Source, Destination))
+			return false;
 	}
 	return true;
+}
+
+unsigned __int64 CWAVRIFFContainer::getSize64()
+{
+	unsigned __int64 size = 12;
+	size_t counts = _children.GetCount();
+	for (size_t i = 0; i < counts; i++)
+	{
+		if (_children[i]->getID() == 'data')
+			size += static_cast<CWAVDataChunk*>(_children[i])->getSize64();
+		else
+			size += _children[i]->getSize();
+	}
+	return size;
+}
+
+CWAVDataChunk* CWAVRIFFContainer::getDataChunk()
+{
+	// only direct children: those with the ID 'data' are CWAVDataChunk (load)
+	size_t counts = _children.GetCount();
+	for (size_t i = 0; i < counts; i++)
+	{
+		if (_children[i]->getID() == 'data')
+			return static_cast<CWAVDataChunk*>(_children[i]);
+	}
+	return NULL;
 }
 
 void CWAVRIFFContainer::save(CBlob *blob)
@@ -80,8 +112,16 @@ bool CWAVRIFFContainer::load(FILE *Stream, u32 offset, u32 size)
 	// 4 Bytes länge
 	// 4 Bytes 'WAVE' als Text
 	// dann die restlichen Chunks/Subchunks
+	// 4.0.4.7: positions in 64 bits (offset + size wrapped in 32 bits: endless walk, huge reads), checked header
+	// reads, the pad byte from the chunk's own size (the absolute offset was wrong after an ID3v2 tag of odd size),
+	// and a 'data' chunk with size 0 or past the end of the file (an unfinished recording, a WAV written to a pipe
+	// with 0xFFFFFFFF) holds the bytes up to the end. It used to be skipped, and a save wrote the file without
+	// its audio (4.0.4.6 and earlier)
+	_loadErrors = false;
+	_walkEnd = size;
 	CBlob header;
-	fseek(Stream, offset, SEEK_SET);
+	if (_fseeki64(Stream, offset, SEEK_SET) != 0)
+		return false;
 	header.FileRead(12, Stream);
 	if (header.GetLength() != 12)
 		return false;
@@ -89,21 +129,49 @@ bool CWAVRIFFContainer::load(FILE *Stream, u32 offset, u32 size)
 	if (header.Get4B(0) != 'RIFF' || header.Get4B(8) != 'WAVE')
 		return false;
 	_chunkID = 'WAVE';
-	offset+=12;
-	u32 endPos = size;
+	unsigned __int64 pos = (unsigned __int64)offset + 12;
+	const unsigned __int64 endPos = size;
 	u32 chunkID, dataSize;
-	long nextReadPos;
-	while (offset + 8 < endPos)
+	unsigned __int64 nextReadPos;
+	while (pos + 8 <= endPos)
 	{
-		fseek(Stream, offset, SEEK_SET);
+		if (_fseeki64(Stream, pos, SEEK_SET) != 0)
+			break;
 		header.FileRead(8, Stream);
+		if (header.GetLength() != 8)
+			break;
 		chunkID = header.Get4B(0);
 		dataSize = header.GetR4B(4);
-		nextReadPos = offset + 8;
+		nextReadPos = pos + 8;
+		if (chunkID == 'data' && dataSize == 0 && nextReadPos + 8 <= endPos)
+		{
+			// an empty data chunk followed by another chunk (a template) stays empty; only a size never filled in
+			// (a recording cut short) means the rest of the file
+			BYTE next[8];
+			bool chunkFollows = false;
+			if (_fseeki64(Stream, nextReadPos, SEEK_SET) == 0 && fread(next, 1, 8, Stream) == 8)
+			{
+				chunkFollows = true;
+				for (int i = 0; i < 4; i++)
+					if (next[i] < 0x20 || next[i] > 0x7E)
+						chunkFollows = false;
+				u32 nextSize = next[4] | (next[5] << 8) | (next[6] << 16) | ((u32)next[7] << 24);
+				if (nextReadPos + 8 + nextSize > endPos)
+					chunkFollows = false;
+			}
+			if (!chunkFollows)
+				dataSize = (u32)(endPos - nextReadPos);
+		}
+		else if (chunkID == 'data' && nextReadPos + dataSize > endPos)
+		{
+			CTools::instance().writeWarning(L"data chunk size %u at position %I64u replaced by the %I64u bytes up to the end", dataSize, pos, endPos - nextReadPos);
+			dataSize = (u32)(endPos - nextReadPos);
+		}
 		if (nextReadPos + dataSize > endPos)
 		{
-			CTools::instance().writeWarning(L"corrupt or invalid chunk '%c%c%c%c' at position %i ignored", BYTE(chunkID >> 24), BYTE(chunkID >> 16), BYTE(chunkID >> 8), BYTE(chunkID), offset);
-			offset = endPos;
+			CTools::instance().writeWarning(L"corrupt or invalid chunk '%c%c%c%c' at position %I64u ignored", BYTE(chunkID >> 24), BYTE(chunkID >> 16), BYTE(chunkID >> 8), BYTE(chunkID), pos);
+			_walkEnd = pos;
+			return true;
 		}
 		else
 		{
@@ -128,13 +196,13 @@ bool CWAVRIFFContainer::load(FILE *Stream, u32 offset, u32 size)
 
 			_children.Add(chunk);
 			CTools::instance().doEvents();
-			chunk->load(Stream, nextReadPos, dataSize);
-			offset = nextReadPos + dataSize;
-			if (offset % 2 == 1)
-				offset++;
-
+			// (a LIST that doesn't parse whole kept its readable entries before too)
+			if (!chunk->load(Stream, (u32)nextReadPos, dataSize) && chunkID != 'LIST')
+				_loadErrors = true;
+			pos = nextReadPos + dataSize + (dataSize & 1);
 		}
 	}
+	_walkEnd = (pos < endPos) ? pos : endPos;
 	return true;
 }
 
@@ -173,7 +241,7 @@ void CWAVRIFFContainer::addInfoChunk(u32 FrameID, CAtlString newText)
 	}
 	CWAVChunk* chunk = new CWAVChunk(FrameID);
 	chunk->getData()->Clear();
-	chunk->getData()->AddEncodedString(TEXT_ENCODED_ANSI, newText, false, true);
+	WAVAddAnsiString(chunk->getData(), newText, true);
 	container->_children.Add(chunk);
 }
 

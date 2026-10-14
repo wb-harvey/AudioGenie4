@@ -92,6 +92,7 @@ CID3F_EQUA::CID3F_EQUA(long oldID)
 {
 	init(0, EMPTY);	
 	_oldID = oldID;	
+	_fromFile = true;
 }
 
 CID3F_EQUA::CID3F_EQUA(BYTE format, LPCWSTR identification)
@@ -108,6 +109,7 @@ void CID3F_EQUA::init(BYTE format, LPCWSTR identification)
 	isDecoded = true;
 	_oldID = F_EQU2;
 	lastTag = 99;
+	_fromFile = false;
 }
 
 CID3F_EQUA::~CID3F_EQUA(void)
@@ -137,7 +139,7 @@ void CID3F_EQUA::decode()
 		{
 			_bits = 16;
 			int start = 1;
-			if (_blob.GetLength() < 6)
+			if (_blob.GetLength() < 2) // 4.0.4.7: interpolation method and the identification's $00 (was < 6, which emptied a valid frame)
 			{
 				_format = 0;
 				_identification.Empty();
@@ -153,7 +155,7 @@ void CID3F_EQUA::decode()
 		{
 			_identification.Empty();
 			_format = 0;				
-			if (_blob.GetLength() < 6)
+			if (_blob.GetLength() < 1) // 4.0.4.7: the adjustment bits (was < 6, which emptied a frame with one band) (4.0.4.6 and earlier)
 			{
 				_bits = 0;
 			}
@@ -188,6 +190,16 @@ void CID3F_EQUA::encode()
 		mustRebuild = false;
 		lastTag = CTools::ID3V2newTagVersion;		
 	}
+}
+
+// 4.0.4.7: EQU2 (v2.4) and EQUA (v2.2/v2.3) hold their adjustments in different formats. A frame read from the file is
+// not saved into a tag of the other format; it was written with its bytes under the other ID, garbage for every
+// reader (4.0.4.6 and earlier).
+u32 CID3F_EQUA::getStoreID()
+{
+	if (_fromFile && ((_oldID == F_EQU2) != (CTools::ID3V2newTagVersion == TAG_VERSION_2_4)))
+		return F_NONE;
+	return CID3_Frame::getStoreID();
 }
 
 BYTE CID3F_EQUA::getFormat()

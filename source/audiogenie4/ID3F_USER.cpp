@@ -100,7 +100,7 @@ void CID3F_USER::decode()
 			_language.SetAt(0, _blob.GetAt(start++));
 			_language.SetAt(1, _blob.GetAt(start++));
 			_language.SetAt(2, _blob.GetAt(start++));
-			_text = _blob.getNextString(encodingID, start);	
+			_text = _blob.getNextString(textCode(), start);	
 		}		
 		isDecoded = true;
 	}	
@@ -113,7 +113,7 @@ void CID3F_USER::encode()
 		_blob.Clear();
 		_blob.AddValue(encodingID);
 		_blob.AddFixedAnsiString(_language, 3);
-		_blob.AddEncodedString(encodingID, _text, TEXT_WITHOUT_ENCODING, TEXT_WITHOUT_NULLBYTES);
+		_blob.AddEncodedString(textCode(), _text, TEXT_WITHOUT_ENCODING, TEXT_WITHOUT_NULLBYTES);
 		mustRebuild = false;
 	}
 }

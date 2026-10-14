@@ -97,8 +97,10 @@ void CID3F_POPM::decode()
 		{
 			int start = 0;
 			_email = _blob.getNextString(TEXT_ENCODED_ANSI, start);
-			_rating = _blob.GetAt(start++);
-			_counter = _blob.Get4B(start);
+			// 4.0.4.7: the counter is optional; it (and a missing rating) was read past the data (4.0.4.6 and earlier)
+			_rating = ((size_t)start < _blob.GetLength()) ? _blob.GetAt(start) : 0;
+			start++;
+			_counter = ((size_t)start + 4 <= _blob.GetLength()) ? _blob.Get4B(start) : 0;
 		}		
 		isDecoded = true;
 	}	

@@ -108,8 +108,11 @@ CAtlString CWMA_ObjectFactory::GetValue(CAtlString FieldName)
 void  CWMA_ObjectFactory::DeleteField(size_t index)
 {
 	ATLASSERT(index >= 0 && index < tagdatas.GetCount() );
-	//	delete tagdatas.GetAt(index);
-	tagdatas.RemoveAt(index);	
+	if (index >= tagdatas.GetCount())
+		return;
+	// 4.0.4.7: the list is the only owner (SetPictureArray deletes a replaced one the same way); it leaked
+	delete tagdatas.GetAt(index);
+	tagdatas.RemoveAt(index);
 }
 
 bool CWMA_ObjectFactory::SetValue(CAtlString FieldName, CAtlString newValue)
@@ -180,15 +183,27 @@ TagPictureStruct* CWMA_ObjectFactory::ExtractPicture(CBlob* data)
 	** Next is a LPWSTR which gives a picture description
 	** Then is the actual picture data
 	*/
+	tps.Mime.Empty();
+	tps.Description.Empty();
+	tps.PicDaten = data->m_pData;
+	tps.PicSize = 0;
+	tps.Type = 0;
+	if (data->GetLength() < 5)
+	{
+		CTools::instance().setLastError(ERR_WMA_PARSE);
+		return &tps;
+	}
 	tps.Type = data->GetAt(0);
 	tps.PicSize = (u32)data->GetR4B(1);
 	int startPos = 5;
 	tps.Mime = data->getNextString(TEXT_ENCODED_UTF16, startPos);
 	tps.Description = data->getNextString(TEXT_ENCODED_UTF16, startPos);
-	if (startPos + tps.PicSize > data->GetLength())
+	// 4.0.4.7: in 64 bits; startPos + PicSize wrapped in 32 bits and a huge size passed the check (4.0.4.6 and earlier)
+	if (startPos < 0 || (unsigned __int64)startPos + tps.PicSize > data->GetLength())
 	{
 		CTools::instance().setLastError(ERR_WMA_PARSE);
 		tps.PicSize = 0;
+		startPos = 0;
 	}
 	tps.PicDaten = data->m_pData + startPos;
 	return &tps;

@@ -78,13 +78,15 @@ void CID3F_CHAP::init(LPCWSTR ID, LPCWSTR title, LPCWSTR description )
 
 CID3F_CHAP::~CID3F_CHAP(void)
 {
-	_frames.RemoveAll();
+	// 4.0.4.7: the sub-frames are deleted by ~CID3F_Chapter; RemoveAll here leaked them (4.0.4.6 and earlier)
 }
 
 void CID3F_CHAP::decode()
 {
 	if (!isDecoded)
 	{	
+		if (isUnsynchronized()) // 4.0.4.7: was missing (4.0.4.6 and earlier)
+			resync();
 		_data.Clear();
 		if (_blob.GetLength() < 16)
 		{
@@ -99,6 +101,8 @@ void CID3F_CHAP::decode()
 		{
 			int start = 0;
 			_ID = _blob.getNextString(TEXT_ENCODED_ANSI, start);
+			if ((size_t)start + 16 > _blob.GetLength()) // 4.0.4.7: no room for the times after the ID (read past the data)
+				start = (int)_blob.GetLength() - 16;
 			_startTime = (u32)_blob.Get4B(start);
 			_endTime = (u32)_blob.Get4B(start + 4);
 			_startOffset = (u32)_blob.Get4B(start + 8);

@@ -25,6 +25,7 @@
 #include "FlacCover.h"
 #include "Blob.h"
 #include <share.h>
+#include <errno.h>
 
 //////////////////////////////////////////////////////////////////////
 // Konstruktion/Destruktion
@@ -32,6 +33,11 @@
 CFLAC::CFLAC()
 {
 	covers.SetCount(0, 2);
+	oldLen = 0;
+	firstAudioPosition = 0;
+	mustRebuild = false;
+	blocksDamaged = false;
+	blockTooBig = false;
 }
 
 CFLAC::~CFLAC()
@@ -59,6 +65,7 @@ void CFLAC::ResetData()
 	BlockHeader.Type = 0;
 	BlockHeader.Size = 0;
 	firstAudioPosition = 0;
+	blocksDamaged = false;
 	CVorbisComment::ResetData();
 	DeletePictures();
 }
@@ -88,7 +95,7 @@ float CFLAC::GetRatio()
 {
 	/* Get compression ratio */
 	if (IsValid())
-		return CTools::FileSize / (float) (Samples * Channels * BitsPerSample / 8.0f) * 100.0f;
+		return (float)(CTools::FileSize / ((double)Samples * Channels * BitsPerSample / 8.0) * 100.0); // (in double: the product overflowed a long, 4.0.4.6 and earlier)
 	
 	return 0.0f;	
 }
@@ -108,18 +115,28 @@ long CFLAC::GetBitRate()
 bool CFLAC::ReadFromFile(FILE *Stream)
 {
 	/* Read FLAC's Audio header data */
-	fseek(Stream, CTools::ID3v2Size, SEEK_SET);
-	fread(tmpHdr, 1, 4, Stream);
+	memset(tmpHdr, 0, 4);
+	if (_fseeki64(Stream, CTools::ID3v2Size, SEEK_SET) == 0 && fread(tmpHdr, 1, 4, Stream) == 4 &&
+		memcmp(tmpHdr, FLAC_ID, 4) == 0)
 	/* Process data if loaded and header valid */
-	if (memcmp(tmpHdr, FLAC_ID, 4) == 0)
 	{
-		do
+		// The walk ends at the block marked last. The end of the file, a block running past it, or more than 1024
+		// blocks end it too, and the file is then not saved: what follows isn't known to be audio (a block of size 0
+		// was taken as the last one, and a save put the new metadata in front of the remaining blocks, 4.0.4.6 and earlier)
+		__int64 fileLength = _filelengthi64(_fileno(Stream));
+		blocksDamaged = false;
+		for (int count = 0; ; count++)
 		{
-			ReadBlock(Stream);
+			if (count >= 1024 || !ReadBlock(Stream, fileLength))
+			{
+				blocksDamaged = true;
+				break;
+			}
+			if (BlockHeader.lastBlock)
+				break;
 		}
-		while (!BlockHeader.lastBlock);
-		firstAudioPosition = ftell(Stream);
-		oldLen = firstAudioPosition - CTools::ID3v2Size;	
+		firstAudioPosition = (long)_ftelli64(Stream);
+		oldLen = firstAudioPosition - CTools::ID3v2Size;
 		return true;
 	}
 	ResetData();
@@ -128,17 +145,18 @@ bool CFLAC::ReadFromFile(FILE *Stream)
 
 //-------------------------------------------------------------------------
 
-void CFLAC::ReadBlockHeader(FILE *Stream)
+bool CFLAC::ReadBlockHeader(FILE *Stream)
 {
-	memset(tmpHdr, 0, 4);	
-	fread(tmpHdr, 1, 4, Stream);	
+	memset(tmpHdr, 0, 4);
+	if (fread(tmpHdr, 1, 4, Stream) != 4)
+		return false;
 	BlockHeader.lastBlock = ((tmpHdr[0] & 0x80) == 0x80);
-	// letztes Flag löschen
+	// letztes Flag loeschen
 	tmpHdr[0] &= 0x7F;
 	BlockHeader.Type = tmpHdr[0];
 	BlockHeader.Size = (tmpHdr[1] << 16) + (tmpHdr[2] << 8) + tmpHdr[3];
-	if (BlockHeader.Size <= 0)
-		BlockHeader.lastBlock = true;
+	// (a block of size 0 is valid, e.g. empty padding: it isn't the last block unless it says so)
+	return true;
 }
 
 //-------------------------------------------------------------------------
@@ -153,36 +171,58 @@ void CFLAC::BuildBlockHeader(int Len, BYTE typ)
 
 //-------------------------------------------------------------------------
 
-void CFLAC::ReadBlock(FILE *Stream)
+// Reads one metadata block; false at the end of the file or for a block that runs past it. Each block is read
+// whole into memory and parsed from there, and the stream always goes on at the block's end (the comments were
+// parsed from the file with no bound by the block's size, 4.0.4.6 and earlier).
+bool CFLAC::ReadBlock(FILE *Stream, __int64 fileLength)
 {
-	ReadBlockHeader(Stream);
+	if (!ReadBlockHeader(Stream))
+		return false;
 	int size = BlockHeader.Size;
-	if (size <= 0)
-		return;
+	__int64 blockStart = _ftelli64(Stream);
+	if (blockStart < 0 || blockStart + size > fileLength)
+		return false;
 	ATLTRACE(L"Block:%i  size:%i\n", BlockHeader.Type, size);
+	CBlob block;
+	if (BlockHeader.Type != METADATA_BLOCK_PADDING && size > 0)
+	{
+		block.FileRead(size, Stream);
+		if ((int)block.GetLength() != size)
+			return false;
+	}
 	switch (BlockHeader.Type)
 	{
 	case METADATA_BLOCK_STREAMINFO:
-		BlockStreamInfo.FileRead(size, Stream);
-		AnalyzeStreamInfo();
+		BlockStreamInfo.Clear();
+		BlockStreamInfo.AddBlob(block);
+		if (BlockStreamInfo.GetLength() >= 18)
+			AnalyzeStreamInfo();
 		break;
 	case METADATA_BLOCK_PADDING:
-		fseek(Stream, size, SEEK_CUR);
 		break;
 	case METADATA_BLOCK_COMMENT:
 		BlockComment.Clear();
-		AnalyzeVorbisComments(Stream);
+		AnalyzeVorbisComments(block, 0);
 		break;
 	case METADATA_BLOCK_PICTURE:
-		BlockCover.FileRead(size, Stream);
-		if (BlockCover.GetLength() > 32)
-			covers.Add(new CFlacCover(&BlockCover));		
+		{
+			// a picture whose lengths don't fit its block isn't read as a cover; it is kept as it is, like an unknown block
+			CFlacCover *cover = (block.GetLength() > 32) ? new CFlacCover(&block) : NULL;
+			if (cover != NULL && cover->isValid())
+			{
+				covers.Add(cover);
+				break;
+			}
+			delete cover;
+			BlockOther.AddMemory(tmpHdr, 4);
+			BlockOther.AddBlob(block);
+		}
 		break;
 	default:
-		Daten.FileRead(size, Stream);
 		BlockOther.AddMemory(tmpHdr, 4);
-		BlockOther.AddBlob(Daten);
+		BlockOther.AddBlob(block);
 	};
+	return _fseeki64(Stream, blockStart + size, SEEK_SET) == 0;
 }
 
 //-------------------------------------------------------------------------
@@ -232,11 +272,15 @@ void CFLAC::BuildFrame(bool withComment)
 	Daten.AddMemory(tmpHdr, 4);
 	Daten.AddBlob(BlockStreamInfo);
 	Daten.AddBlob(BlockComment);
+	// a block's size has 24 bits: a bigger one can't be written (it was cut to 24 bits, a broken file)
+	blockTooBig = BlockComment.GetLength() > 4 + 0xFFFFFF;
 	
 	for (size_t i = 0; i < covers.GetCount(); i++)
 	{
 		BlockCover.Clear();
 		covers[i]->Save(&BlockCover); 
+		if (BlockCover.GetLength() > 0xFFFFFF)
+			blockTooBig = true;
 		BuildBlockHeader((int)BlockCover.GetLength(), METADATA_BLOCK_PICTURE);
 		Daten.AddMemory(tmpHdr, 4);
 		Daten.AddBlob(BlockCover);
@@ -245,7 +289,8 @@ void CFLAC::BuildFrame(bool withComment)
 	Daten.AddBlob(BlockOther);
 	Len = (int)Daten.GetLength();
 	padding = oldLen - Len - 4;
-	if (padding > 0)
+	// (padding over 24 bits, after a big picture was removed: the file is written again with new padding)
+	if (padding > 0 && padding <= 0xFFFFFF)
 	{
 		mustRebuild = false;
 	}
@@ -264,23 +309,87 @@ void CFLAC::BuildFrame(bool withComment)
 
 bool CFLAC::SaveToFile(LPCWSTR FileName)
 {
+	if (blocksDamaged || oldLen <= 0)
+	{
+		// the metadata blocks didn't end with a last block before the end of the file (see ReadFromFile)
+		CTools::instance().setLastError(ERR_INVALID_FORMAT);
+		return false;
+	}
 	BuildFrame(true);
-	if (mustRebuild)
-		return RebuildFile(FileName);
-	return ReplaceTag(FileName);
+	if (blockTooBig)
+	{
+		CTools::instance().setLastError(ERR_FRAME_TOO_BIG);
+		return false;
+	}
+	bool result = mustRebuild ? RebuildFile(FileName) : ReplaceTag(FileName);
+	if (result)
+	{
+		// The new metadata's length, for a second save without a new analyze (it kept the old one: a rebuild's
+		// longer metadata was then cut into, 4.0.4.6 and earlier). A rewrite in place keeps the length.
+		oldLen = (long)Daten.GetLength();
+		firstAudioPosition = CTools::ID3v2Size + oldLen;
+	}
+	return result;
+}
+
+//-------------------------------------------------------------------------
+
+// Copies count bytes in blocks of 1 MB; false on a short read or write
+static bool CopyFileBytes(FILE *Source, FILE *Destination, __int64 count)
+{
+	static const size_t blockSize = 1024 * 1024;
+	CBlob buffer;
+	while (count > 0)
+	{
+		size_t want = count > (__int64)blockSize ? blockSize : (size_t)count;
+		buffer.FileRead(want, Source);
+		if (buffer.GetLength() != want || fwrite(buffer.m_pData, 1, want, Destination) != want)
+			return false;
+		count -= want;
+	}
+	return true;
+}
+
+//-------------------------------------------------------------------------
+
+// Whether the file still has "fLaC" at the metadata's start and a FLAC frame (or its end) right after the
+// metadata as last read: a file changed since its analyze isn't written over with stale positions
+static bool CheckLayout(FILE *Stream, __int64 start, __int64 audioStart)
+{
+	__int64 fileLength = _filelengthi64(_fileno(Stream));
+	BYTE buf[4];
+	if (start < 0 || audioStart <= start || audioStart > fileLength)
+		return false;
+	if (_fseeki64(Stream, start, SEEK_SET) != 0 || fread(buf, 1, 4, Stream) != 4 || memcmp(buf, FLAC_ID, 4) != 0)
+		return false;
+	if (audioStart == fileLength)
+		return true;
+	if (_fseeki64(Stream, audioStart, SEEK_SET) != 0 || fread(buf, 1, 2, Stream) != 2)
+		return false;
+	return buf[0] == 0xFF && (buf[1] & 0xFE) == 0xF8; // frame sync
 }
 
 //-------------------------------------------------------------------------
 
 bool CFLAC::RebuildFile(LPCWSTR FileName)
 {
+	// The copy is written in blocks with every read and write checked, and replaces the original in one step only
+	// when it is whole; the original is untouched otherwise (the whole file was read into memory unchecked, every
+	// stream of the process closed with _fcloseall, and the original deleted before the rename, 4.0.4.6 and earlier)
 	FILE *Source;
 	FILE *Destination;
 	CAtlString NewFileName(FileName);
-	CBlob tmp;
 	if ( (Source = _wfsopen(FileName, READ_ONLY, _SH_DENYNO)) == NULL)
 	{
 		CTools::instance().setLastError(errno);
+		return false;
+	}
+	__int64 sourceSize = _filelengthi64(_fileno(Source));
+	__int64 audioStart = (__int64)CTools::ID3v2Size + oldLen;
+	if (!CheckLayout(Source, CTools::ID3v2Size, audioStart))
+	{
+		fclose(Source);
+		CTools::instance().setLastError(ERR_INVALID_FORMAT);
 		return false;
 	}
 
@@ -292,30 +401,33 @@ bool CFLAC::RebuildFile(LPCWSTR FileName)
 		CTools::instance().setLastError(errno);
 		return false;
 	};
-	// wenn ID3v2-Tag vorhanden, den auch noch mitschleppen
-	if (CTools::ID3v2Size > 0)
+	// wenn ID3v2-Tag vorhanden, den auch noch mitschleppen; dann der neue Block, dann die Audiodaten
+	bool ok = _fseeki64(Source, 0, SEEK_SET) == 0 && CopyFileBytes(Source, Destination, CTools::ID3v2Size) &&
+		Daten.FileWrite(Daten.GetLength(), Destination) == Daten.GetLength() &&
+		_fseeki64(Source, audioStart, SEEK_SET) == 0 && CopyFileBytes(Source, Destination, sourceSize - audioStart);
+	if (ok && _ftelli64(Destination) != CTools::ID3v2Size + (__int64)Daten.GetLength() + (sourceSize - audioStart))
+		ok = false;
+	if (ferror(Source))
+		ok = false;
+	if (fflush(Destination) != 0 || ferror(Destination))
+		ok = false;
+	if (fclose(Destination) != 0)
+		ok = false;
+	fclose(Source);
+
+	if (!ok)
 	{
-		tmp.FileRead(CTools::ID3v2Size, Source);
-		tmp.FileWrite(CTools::ID3v2Size, Destination);
-	}
-	// alten Block überspringen
-	fseek(Source, oldLen, SEEK_CUR);
-	Daten.FileWrite(Daten.GetLength(), Destination);
-	Daten.FileRead(_filelength(_fileno(Source)), Source);
-	Daten.FileWrite(Daten.GetLength(), Destination);
-	_flushall();
-	_fcloseall();
-	CTools::instance().doEventsNow();
-	/* Replace old file and delete temporary file */
-	if (_wremove(FileName) != 0)
-	{
-		CTools::instance().setLastError(errno);
+		_wremove(NewFileName); // the original is untouched
+		CTools::instance().setLastError(errno != 0 ? errno : EIO);
 		return false;
 	}
-	CTools::instance().doEventsNow();
-	if (_wrename(NewFileName, FileName) != 0)
+
+	/* Replace the original with the copy in one step: it is either the old file or the new one, never missing */
+	if (!MoveFileExW(NewFileName, FileName, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
 	{
-		CTools::instance().setLastError(errno);
+		DWORD err = GetLastError();
+		_wremove(NewFileName);
+		CTools::instance().setLastError(err == ERROR_ACCESS_DENIED || err == ERROR_SHARING_VIOLATION ? EACCES : EIO);
 		return false;
 	}
 	return true;
@@ -328,11 +440,17 @@ bool CFLAC::ReplaceTag(LPCWSTR FileName)
 	FILE *Stream;
 	if ( (Stream = _wfsopen(FileName, READ_AND_WRITE, _SH_DENYWR)) != NULL)
 	{
-		fseek(Stream, CTools::ID3v2Size, SEEK_SET);
-		Daten.FileWrite(Daten.GetLength(), Stream);
-		fflush(Stream);
-		fclose(Stream);
-		return true;
+		// (the new metadata is exactly as long as the old: checked against the file before it is written over)
+		bool ok = (__int64)Daten.GetLength() == oldLen &&
+			CheckLayout(Stream, CTools::ID3v2Size, (__int64)CTools::ID3v2Size + oldLen) &&
+			_fseeki64(Stream, CTools::ID3v2Size, SEEK_SET) == 0 &&
+			Daten.FileWrite(Daten.GetLength(), Stream) == Daten.GetLength() &&
+			fflush(Stream) == 0 && !ferror(Stream);
+		if (fclose(Stream) != 0)
+			ok = false;
+		if (!ok)
+			CTools::instance().setLastError(ERR_INVALID_FORMAT);
+		return ok;
 	}
 	CTools::instance().setLastError(errno);
 	return false;

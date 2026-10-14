@@ -123,28 +123,75 @@ void CWMA_File::SetUserItem(LPCWSTR key, LPCWSTR item)
 
 }
 
+// 4.0.4.7: the size of an ID3v2 tag in front of the file, by the same rule the analysis uses (CID3V2::ReadHeader),
+// read from the file being saved instead of the globals of the last analyzed file
+static __int64 WMAReadID3v2Size(FILE *Stream, __int64 fileLen)
+{
+	BYTE buf[10];
+	if (_fseeki64(Stream, 0, SEEK_SET) != 0 || fread(buf, 1, 10, Stream) != 10)
+		return 0;
+	if (buf[0] != 'I' || buf[1] != 'D' || buf[2] != '3' || buf[3] == 0xFF || buf[4] == 0xFF)
+		return 0;
+	__int64 size = ((__int64)buf[6] << 21) + (buf[7] << 14) + (buf[8] << 7) + buf[9] + 10;
+	if (buf[3] == 4 && (buf[5] & 0x10) == 0x10)
+		size += 10; // v2.4 footer (an extended header is inside the size)
+	return (size > fileLen) ? 0 : size;
+}
+
+static bool WMACopyBytes(FILE *Source, FILE *Destination, __int64 count)
+{
+	static const size_t blockSize = 1024 * 1024;
+	CBlob buffer;
+	try
+	{
+		while (count > 0)
+		{
+			size_t want = count > (__int64)blockSize ? blockSize : (size_t)count;
+			buffer.FileRead(want, Source);
+			if (buffer.GetLength() != want || fwrite(buffer.m_pData, 1, want, Destination) != want)
+				return false;
+			count -= want;
+		}
+	}
+	catch (...)
+	{
+		return false;
+	}
+	return true;
+}
+
 bool CWMA_File::SaveToFile(LPCWSTR FileName)
 {
+	// 4.0.4.7: the header is read again from this file (its own ID3v2 size and length, not the globals of the last
+	// analyzed file) and nothing is written unless it was read whole; a rebuild keeps an ID3v2 tag in front, checks
+	// every read and write and replaces the original in one step. Up to 4.0.4.6 a header read short was written
+	// back in place, a failed temp file returned true and left the file open, _fcloseall closed every stream of
+	// the process, the original was deleted before the rename, and an ID3v2 tag in front was dropped.
 	FILE* Stream;
+	errno = 0;
 	if ( (Stream = _wfsopen(FileName, READ_AND_WRITE, _SH_DENYWR)) == NULL)
 	{
 		CTools::instance().setLastError(errno);
 		return false;
 	}
 
-	fseek(Stream, CTools::ID3v2Size, SEEK_SET);
-	u32 oldHeaderSize = (u32)header.loadHeaderOnly(Stream);
-	if (oldHeaderSize == 0) 
+	__int64 fileLen = _filelengthi64(_fileno(Stream));
+	__int64 id3v2Size = WMAReadID3v2Size(Stream, fileLen);
+	_fseeki64(Stream, id3v2Size, SEEK_SET);
+	__int64 oldHeaderSize = header.loadHeaderOnly(Stream);
+	if (oldHeaderSize <= 0 || oldHeaderSize > 0x7FFFFFFF || id3v2Size + oldHeaderSize > fileLen)
 	{
+		CTools::instance().setLastError(ERR_WMA_PARSE);
 		fclose(Stream);
 		return false;
 	}
-	long DataPosition = CTools::ID3v2Size + oldHeaderSize;
+	__int64 DataPosition = id3v2Size + oldHeaderSize;
 	CWMA_Object *obj = NULL;
 	// Rette die aktuellen Objekte, falls vorhanden
 	CWMA_MetadataLibrary *newMetas = NULL;
 	CWMA_ContentDescription *newContent = NULL;
 	CWMA_ExtContentDescription *newExtContent = NULL;
+	bool dropExtContent = false;
 	if ((obj = header.findObject(WMA_CONTENT_DESCRIPTION_ID)) != NULL)
 	{
 		if (obj->getData()->GetLength() > 0)
@@ -154,6 +201,8 @@ bool CWMA_File::SaveToFile(LPCWSTR FileName)
 	{
 		if (obj->getData()->GetLength() > 0)
 			newExtContent = new CWMA_ExtContentDescription(obj->getData());
+		else
+			dropExtContent = true; // 4.0.4.7: every field cleared; reloading the header brought the old ones back
 	}
 	else
 	{
@@ -191,9 +240,20 @@ bool CWMA_File::SaveToFile(LPCWSTR FileName)
 	}
 
 	ResetData();
-	fseek(Stream, CTools::ID3v2Size, SEEK_SET);
-	header.load(Stream, CTools::FileSize);
-	// Alle Paddings rausschmeissen	
+	_fseeki64(Stream, id3v2Size, SEEK_SET);
+	__int64 maxHeader = fileLen - id3v2Size;
+	if (maxHeader > 0x7FFFFFFF)
+		maxHeader = 0x7FFFFFFF;
+	if (!header.load(Stream, (size_t)maxHeader) || !header.isComplete())
+	{
+		delete newMetas;
+		delete newContent;
+		delete newExtContent;
+		CTools::instance().setLastError(ERR_WMA_PARSE);
+		fclose(Stream);
+		return false;
+	}
+	// Alle Paddings rausschmeissen
 	size_t oldPadding = 0;
 	while ((obj = header.findObject(WMA_PADDING_ID)) != NULL)
 	{
@@ -216,18 +276,22 @@ bool CWMA_File::SaveToFile(LPCWSTR FileName)
 		else
 			he->deleteObject(WMA_METADATA_LIBRARY_ID);
 	}
+	else
+		delete newMetas; // (nowhere to put it; it leaked)
 	// Neue Elemente ersetzen
 	if (newContent != NULL)
 		header.replaceObject(newContent);
 	if (newExtContent != NULL)
 		header.replaceObject(newExtContent);
+	else if (dropExtContent)
+		header.deleteObject(WMA_EXTENDED_CONTENT_DESCRIPTION_ID);
 
 	size_t blockSize = CTools::configValues[CONFIG_ID3V2WRITEBLOCKSIZE];
 	CBlob newHeader(blockSize);
 	header.save(&newHeader);
 	CWMA_Padding *newPadding = NULL;
 	long paddingBlockSize = CTools::configValues[CONFIG_WMAPADDINGSIZE];
-	if (newHeader.GetLength() + 26 > oldHeaderSize) // 24 Bytes brauch das Padding-Object für sich und mind. 1 Bytes Padding
+	if ((__int64)newHeader.GetLength() + 26 > oldHeaderSize) // 24 Bytes brauch das Padding-Object für sich und mind. 1 Bytes Padding
 	{   
 		ATLTRACE(L"rebuild file...\n");
 		// Rebuild
@@ -245,55 +309,65 @@ bool CWMA_File::SaveToFile(LPCWSTR FileName)
 		FILE *Destination;
 		CAtlString NewFileName(FileName);
 		NewFileName+=TILDE;
-		if ( (Destination = _wfsopen(NewFileName, WRITE_ONLY, _SH_DENYWR)) != NULL)
-		{
-			newHeader.FileWrite(newHeader.GetLength(), Destination);
-			// Copy the rest of the File in Blocks
-			fseek(Stream, DataPosition, SEEK_SET);
-			CBlob tmp(blockSize);
-			do
-			{
-				ATLTRACE(_T("Write WMAData Block\n"));
-				tmp.FileRead(blockSize, Stream);
-				tmp.FileWrite(tmp.GetLength(), Destination);
-			} while (tmp.GetLength() == blockSize);
-			_flushall();
-			_fcloseall();
-			/* Replace old file and delete temporary file */
-			CTools::instance().doEventsNow();
-			if (_wremove(FileName) != 0)
-			{
-				CTools::instance().setLastError(errno);
-				return false;
-			}
-			CTools::instance().doEventsNow();
-			if (_wrename(NewFileName, FileName) != 0)
-			{
-				CTools::instance().setLastError(errno);
-				return false;
-			}
-		}
-		else
+		if ( (Destination = _wfsopen(NewFileName, WRITE_ONLY, _SH_DENYWR)) == NULL)
 		{
 			CTools::instance().setLastError(errno);
+			fclose(Stream);
+			return false;
+		}
+		// The ID3v2 tag in front, the new header, then the rest of the file
+		bool copied = true;
+		if (id3v2Size > 0)
+			copied = (_fseeki64(Stream, 0, SEEK_SET) == 0 && WMACopyBytes(Stream, Destination, id3v2Size));
+		if (copied && newHeader.FileWrite(newHeader.GetLength(), Destination) != newHeader.GetLength())
+			copied = false;
+		if (copied)
+			copied = (_fseeki64(Stream, DataPosition, SEEK_SET) == 0 && WMACopyBytes(Stream, Destination, fileLen - DataPosition));
+		// Only this save's own streams: _fcloseall closed every stream the process had open
+		if (fflush(Destination) != 0 || ferror(Destination))
+			copied = false;
+		if (fclose(Destination) != 0)
+			copied = false;
+		fclose(Stream);
+		if (!copied)
+		{
+			_wremove(NewFileName); // the original is untouched
+			CTools::instance().setLastError(errno != 0 ? errno : EIO);
+			return false;
+		}
+		CTools::instance().doEventsNow();
+		/* Replace the original with the copy in one step: it is either the old file or the new one, never missing */
+		if (!MoveFileExW(NewFileName, FileName, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+		{
+			DWORD err = GetLastError();
+			_wremove(NewFileName);
+			CTools::instance().setLastError(err == ERROR_ACCESS_DENIED || err == ERROR_SHARING_VIOLATION ? EACCES : EIO);
+			return false;
 		}
 	}
 	else
 	{
 		ATLTRACE(L"rewrite file...\n");
 		// Passendes Padding einfügen
-		u32 newPaddingSize = oldHeaderSize - newHeader.GetLength() - 24;
+		u32 newPaddingSize = (u32)(oldHeaderSize - newHeader.GetLength() - 24);
 		if (newPaddingSize > 0)
 		{
-			newPadding = new CWMA_Padding(oldHeaderSize - newHeader.GetLength() - 24);
+			newPadding = new CWMA_Padding(newPaddingSize);
 			header.replaceObject(newPadding);
 		}
 		newHeader.Clear();
 		header.save(&newHeader);
-		fseek(Stream, CTools::ID3v2Size, SEEK_SET);	
-		newHeader.FileWrite(newHeader.GetLength(), Stream);
-		_flushall();
-		fclose(Stream);	
+		bool written = (_fseeki64(Stream, id3v2Size, SEEK_SET) == 0
+			&& newHeader.FileWrite(newHeader.GetLength(), Stream) == newHeader.GetLength());
+		if (fflush(Stream) != 0 || ferror(Stream))
+			written = false;
+		if (fclose(Stream) != 0)
+			written = false;
+		if (!written)
+		{
+			CTools::instance().setLastError(errno != 0 ? errno : EIO);
+			return false;
+		}
 	}
 	return true;
 }

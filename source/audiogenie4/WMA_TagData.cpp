@@ -28,6 +28,7 @@
 CWMA_TagData::CWMA_TagData(BYTE art)
 {
 	_art = art;
+	_loadedSize = 0;
 	FieldSize = 0;
 	Type = 0;
 	LanguageListIndex = 0;
@@ -39,6 +40,7 @@ CWMA_TagData::CWMA_TagData(CAtlString fieldName, CAtlString fieldValue)
 {
 	FieldName = fieldName;
 	_art = EXTCONTENT_ART;
+	_loadedSize = 0;
 	Type = 0;
 	LanguageListIndex = 0;
 	StreamNumber = 0;
@@ -68,7 +70,17 @@ bool CWMA_TagData::setNewPicture(BYTE *arr, u32 len, LPCWSTR Description, BYTE p
 	_data.AddEncodedString(TEXT_ENCODED_UTF16, CTools::instance().ExtractMimeFromPicture(arr), false, true);
 	_data.AddEncodedString(TEXT_ENCODED_UTF16, Description, false, true);
 	_data.AddMemory(arr, len);
+	fitArt();
 	return false;
+}
+
+void CWMA_TagData::fitArt()
+{
+	// 4.0.4.7: an Extended Content value has a 16-bit length; a longer one (a picture just under 65500 bytes plus
+	// its MIME type and description, text over 32767 characters) wrapped it and broke every descriptor after it
+	// (4.0.4.6 and earlier). It goes to the Metadata Library, which has a 32-bit length.
+	if (_art == EXTCONTENT_ART && _data.GetLength() > 0xFFFF)
+		_art = METADATA_ART;
 }
 
 void CWMA_TagData::setNewValue(CAtlString newValue)
@@ -109,53 +121,82 @@ void CWMA_TagData::setNewValue(CAtlString newValue)
 	{
 		_data.AddString(newValue);
 		_data.AddValue(0, 2);
-	}     	
+	}
+	fitArt();
 }
 
 bool CWMA_TagData::load(FILE *Stream, size_t maxLen)
 {
+	// 4.0.4.7: maxLen is what is left of the object. The name and value sizes come from the file and are checked
+	// against it, and every read must return all its bytes; a Metadata Library value size of up to 4 GB was read
+	// as it was (an overflow on x86, bad_alloc out of the DLL) (4.0.4.6 and earlier)
 	_data.Clear();
+	_loadedSize = 0;
 	u32	DataSize = 0;
-	if (_art == EXTCONTENT_ART)
+	size_t headerSize;
+	try
 	{
-		_data.FileRead(2, Stream);
-		FieldSize = _data.GetR2B(0);
-		if (FieldSize > maxLen )
+		if (_art == EXTCONTENT_ART)
 		{
-			CTools::instance().setLastError(ERR_WMA_PARSE);
-			_data.Clear();
+			_data.FileRead(2, Stream);
+			if (_data.GetLength() != 2 || maxLen < 2)
+				goto corrupt;
+			FieldSize = _data.GetR2B(0);
+			if ((size_t)FieldSize + 6 > maxLen)
+				goto corrupt;
+			/* Read field name */
+			_data.FileRead(FieldSize, Stream);
+			if (_data.GetLength() != FieldSize)
+				goto corrupt;
+			FieldName = _data.ConvertToUnicodeString(TEXT_ENCODED_UTF16);
+			/* Read value data type */
+			_data.FileRead(4, Stream);
+			if (_data.GetLength() != 4)
+				goto corrupt;
+			Type = _data.GetR2B(0);
+			DataSize = (u32)_data.GetR2B(2);
+			headerSize = (size_t)FieldSize + 6;
+		}
+		else if (_art == METADATA_ART)
+		{
+			_data.FileRead(12, Stream);
+			if (_data.GetLength() != 12 || maxLen < 12)
+				goto corrupt;
+			LanguageListIndex = _data.GetR2B(0);
+			StreamNumber = _data.GetR2B(2);
+			FieldSize = _data.GetR2B(4);
+			Type = _data.GetR2B(6);
+			DataSize = _data.GetR4B(8);
+			if ((size_t)FieldSize + 12 > maxLen)
+				goto corrupt;
+			/* Read field name */
+			_data.FileRead(FieldSize, Stream);
+			if (_data.GetLength() != FieldSize)
+				goto corrupt;
+			FieldName = _data.ConvertToUnicodeString(TEXT_ENCODED_UTF16);
+			headerSize = (size_t)FieldSize + 12;
+		}
+		else
+		{
+			ATLASSERT(_T("Ungültige TagData Art!"));
 			return false;
 		}
-		/* Read field name */
-		_data.FileRead(FieldSize, Stream);
-		FieldName = _data.ConvertToUnicodeString(TEXT_ENCODED_UTF16);
-		/* Read value data type */
-		_data.FileRead(4, Stream);
-		Type = _data.GetR2B(0);
-		DataSize = (u32)_data.GetR2B(2);
-		ATLTRACE(_T("   FieldName ExtContent: %s at:%d with %u bytes "), FieldName, ftell(Stream), DataSize);
+		if (DataSize > maxLen - headerSize)
+			goto corrupt;
+		ATLTRACE(_T("   FieldName: %s with %u bytes "), FieldName, DataSize);
 		_data.FileRead(DataSize, Stream);
+		if (_data.GetLength() != DataSize)
+			goto corrupt;
+		_loadedSize = headerSize + DataSize;
+		return true;
 	}
-	else if (_art == METADATA_ART)
+	catch (...)
 	{
-		_data.FileRead(12, Stream);
-		LanguageListIndex = _data.GetR2B(0);
-		StreamNumber = _data.GetR2B(2);
-		FieldSize = _data.GetR2B(4);
-		Type = _data.GetR2B(6);		
-		DataSize = _data.GetR4B(8);
-		/* Read field name */
-		_data.FileRead(FieldSize, Stream);
-		FieldName = _data.ConvertToUnicodeString(TEXT_ENCODED_UTF16);
-		ATLTRACE(_T("   FieldName Metadata: %s at:%d with %u bytes "), FieldName, ftell(Stream), DataSize);
-		_data.FileRead(DataSize, Stream);
 	}
-	else 
-	{
-		ATLASSERT(_T("Ungültige TagData Art!"));
-		return false;
-	}
-	return true;
+corrupt:
+	CTools::instance().setLastError(ERR_WMA_PARSE);
+	_data.Clear();
+	return false;
 }
 
 CBlob* CWMA_TagData::getData()
@@ -165,6 +206,9 @@ CBlob* CWMA_TagData::getData()
 
 void CWMA_TagData::buildData(CBlob* blob)
 {
+	// 4.0.4.7: the name size of the name written (the size read from the file was written again, and the following
+	// descriptors were out of step when the name in the file had other padding) (4.0.4.6 and earlier)
+	FieldSize = (u16)(FieldName.GetLength() * 2 + 2);
 	if (_art == METADATA_ART)
 	{
 		blob->AddR2B(LanguageListIndex);
@@ -172,7 +216,7 @@ void CWMA_TagData::buildData(CBlob* blob)
 		blob->AddR2B(FieldSize);
 		blob->AddR2B(Type);
 		blob->AddR4B((int)_data.GetLength());
-		blob->AddEncodedString(TEXT_ENCODED_UTF16, FieldName, false, true);			
+		blob->AddEncodedString(TEXT_ENCODED_UTF16, FieldName, false, true);
 	}
 	else if (_art == EXTCONTENT_ART)
 	{
@@ -212,7 +256,7 @@ CAtlString CWMA_TagData::getFieldValue()
 	if (Type == 3) // DWORD (32)
 		FieldValue.Format(_T("%u"), _data.GetR4B(0));
 	else if (Type == 4) // QWORD (64)
-		FieldValue.Format(_T("%u"), _data.GetR8B(0));
+		FieldValue.Format(_T("%I64u"), _data.GetR8B(0)); // 4.0.4.7: %u took half of the 64-bit value
 	else if (Type == 5) // WORD (16)
 		FieldValue.Format(_T("%u"), _data.GetR2B(0));
 	else if (Type == 6) // GUID

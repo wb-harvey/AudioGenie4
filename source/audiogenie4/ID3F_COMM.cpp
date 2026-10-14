@@ -79,6 +79,8 @@ void CID3F_COMM::decode()
 {
 	if (!isDecoded)
 	{	
+		if (isUnsynchronized()) // 4.0.4.7: was missing (4.0.4.6 and earlier)
+			resync();
 		if (_blob.GetLength() < 4)
 		{
 			_language.Empty();
@@ -93,8 +95,8 @@ void CID3F_COMM::decode()
 			_language.SetAt(1, _blob.GetAt(2));
 			_language.SetAt(2, _blob.GetAt(3)); 
 			int start = 4;
-			_description = _blob.getNextString(encodingID, start);		
-			_text = _blob.getNextString(encodingID, start);
+			_description = _blob.getNextString(textCode(), start);		
+			_text = _blob.getNextString(textCode(), start);
 		}
 		isDecoded = true;
 	}	
@@ -108,8 +110,8 @@ void CID3F_COMM::encode()
 		_blob.Clear();
 		_blob.AddValue(encodingID);
 		_blob.AddFixedAnsiString(_language, 3);
-		_blob.AddEncodedString(encodingID, _description, TEXT_WITHOUT_ENCODING, TEXT_WITH_NULLBYTES);
-		_blob.AddEncodedString(encodingID, _text, TEXT_WITHOUT_ENCODING, TEXT_WITHOUT_NULLBYTES);
+		_blob.AddEncodedString(textCode(), _description, TEXT_WITHOUT_ENCODING, TEXT_WITH_NULLBYTES);
+		_blob.AddEncodedString(textCode(), _text, TEXT_WITHOUT_ENCODING, TEXT_WITHOUT_NULLBYTES);
 		mustRebuild = false;
 	}
 }

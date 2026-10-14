@@ -65,7 +65,7 @@ static CMD5Tool md5Tool;
 static CHeader header;
 static CTTA tta;
 static CWavPack wavpack;
-static CAudio *audio; // Pointer auf die abgeleiteten Klassen
+static CAudio *audio = &defaultaudio; // Pointer auf die abgeleiteten Klassen (NULL before the first analyze crashed every AUDIO getter, 4.0.4.6 and earlier)
 static CID3_Frame *id3frame;
 static CAtlString endung, lastFile;
 static CAtlString Title, Artist, Album, Comment, Genre, Track, Year, Composer;

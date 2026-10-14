@@ -96,10 +96,8 @@ bool CAPE::SetTagItem(LPCWSTR FieldName, LPCWSTR Value)
 			}
 			item->Value.Clear();
 			item->Flags = 0x00;
-			if (TagInfo.Version > APE_VERSION_1_0)
-				item->Value.AddEncodedString(TEXT_ENCODED_UTF8, Value, TEXT_WITHOUT_ENCODING, TEXT_WITHOUT_NULLBYTES);
-			else
-				item->Value.AddString(Value);
+			// always UTF-8: the tag is saved as APEv2 (an APEv1 tag's edited value went in as raw UTF-16, 4.0.4.6 and earlier)
+			item->Value.AddEncodedString(TEXT_ENCODED_UTF8, Value, TEXT_WITHOUT_ENCODING, TEXT_WITHOUT_NULLBYTES);
 			return true;
 		}
 	}
@@ -114,11 +112,8 @@ bool CAPE::SetTagItem(LPCWSTR FieldName, LPCWSTR Value)
 	if (TagInfo.Version == 0)
 		TagInfo.Version = APE_VERSION_2_0;
 
-	if (TagInfo.Version > APE_VERSION_1_0)
-		item->Value.AddEncodedString(TEXT_ENCODED_UTF8, Value, TEXT_WITHOUT_ENCODING, TEXT_WITHOUT_NULLBYTES);
-	// TagItem[newEntry].Value.AddAsUTF8(Value);
-	else
-		item->Value.AddEncodedString(TEXT_ENCODED_ANSI, Value, TEXT_WITHOUT_ENCODING, TEXT_WITHOUT_NULLBYTES);
+	// (always UTF-8, see above)
+	item->Value.AddEncodedString(TEXT_ENCODED_UTF8, Value, TEXT_WITHOUT_ENCODING, TEXT_WITHOUT_NULLBYTES);
 	_items.Add(item);
 	return true;
 }
@@ -132,12 +127,7 @@ CAtlString CAPE::GetTagItem(LPCWSTR FieldName)
 	{
 		item = _items.GetAt(Iterator);
 		if ( item->Key.CompareNoCase(FieldName) == 0 && !item->isBinary() )
-		{
-			if (TagInfo.Version > APE_VERSION_1_0)
-				return item->Value.ConvertToUnicodeString(TEXT_ENCODED_UTF8);
-			else
-				return item->Value.ConvertToUnicodeString(TEXT_ENCODED_ANSI);
-		}
+			return item->Value.ConvertToUnicodeString(TEXT_ENCODED_UTF8); // (APEv1 values are UTF-8 since ReadFields)
 	}
 	return EMPTY;
 }
@@ -162,6 +152,21 @@ bool CAPE::ReadFields(FILE *Stream)
 			return false;
 		}
 		_items.Add(item);
+	}
+	// An APEv1 tag's text is ANSI: it is held as UTF-8 from here, since a save writes the tag as APEv2 (UTF-8). The
+	// values kept their ANSI bytes and were then read as UTF-8 after a save (4.0.4.6 and earlier). GetTagVersion
+	// still reports the version read.
+	if (TagInfo.Version <= APE_VERSION_1_0)
+	{
+		for (size_t i = 0; i < _items.GetCount(); i++)
+		{
+			item = _items.GetAt(i);
+			if (item->isBinary() || item->Value.isEmpty())
+				continue;
+			CAtlString text = item->Value.ConvertToUnicodeString(TEXT_ENCODED_ANSI);
+			item->Value.Clear();
+			item->Value.AddEncodedString(TEXT_ENCODED_UTF8, text, TEXT_WITHOUT_ENCODING, TEXT_WITHOUT_NULLBYTES);
+		}
 	}
 	return true;
 }

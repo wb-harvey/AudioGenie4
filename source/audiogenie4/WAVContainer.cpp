@@ -65,32 +65,39 @@ CWAVChunk* CWAVContainer::find(u32 ID)
 
 bool CWAVContainer::load(FILE *Stream, u32 offset, u32 size)
 {
-	u32 endPos = offset + size;
+	// 4.0.4.7: positions in 64 bits and the header reads checked: offset + size wrapped in 32 bits, and a stale
+	// header after the end of the file repeated the last chunk (4.0.4.6 and earlier)
+	unsigned __int64 endPos = (unsigned __int64)offset + size;
 	CBlob header;
 	// Container hat 4 extra Bytes am Anfang, nehme diese als ID
-	fseek(Stream, offset, SEEK_SET);
+	if (size < 4 || _fseeki64(Stream, offset, SEEK_SET) != 0)
+		return false;
 	header.FileRead(4, Stream);
+	if (header.GetLength() != 4)
+		return false;
 	_chunkID = header.Get4B(0);
 	ATLTRACE(_T("LIST Container at Pos:%u with ID:%c%c%c%c\n"), offset, BYTE(_chunkID >> 24), BYTE(_chunkID >> 16), BYTE(_chunkID >> 8), BYTE(_chunkID));
-	offset+=4;
-	while (offset < endPos)
+	unsigned __int64 pos = (unsigned __int64)offset + 4;
+	while (pos < endPos)
 	{
-		fseek(Stream, offset, SEEK_SET);
-		header.FileRead(8, Stream); 
+		if (pos + 8 > endPos || _fseeki64(Stream, pos, SEEK_SET) != 0)
+			return false;
+		header.FileRead(8, Stream);
+		if (header.GetLength() != 8)
+			return false;
 		u32 chunkID = header.Get4B(0);
 		u32 dataSize = header.GetR4B(4);
 
-		if (offset + dataSize > endPos)
+		if (pos + dataSize > endPos)
 			return false;
 
 		CWAVChunk *chunk = new CWAVChunk(chunkID);
 		_children.Add(chunk);
 		CTools::instance().doEvents();
-		long nextReadPos = offset + 8;
-		chunk->load(Stream, nextReadPos, dataSize);
-		if (dataSize % 2 == 1)
-			nextReadPos++;
-		offset = nextReadPos + dataSize;
+		unsigned __int64 nextReadPos = pos + 8;
+		chunk->load(Stream, (u32)nextReadPos, dataSize);
+		// the walk always moves on by at least the 8 header bytes
+		pos = nextReadPos + dataSize + (dataSize & 1);
 	}
 	return true;
 }
@@ -117,15 +124,18 @@ bool CWAVContainer::save(FILE* Source, FILE *Destination)
 {
 	if (getSize() > 0)
 	{
-		CBlob *blob = new CBlob(getSize() + 12);
-		blob->Add4B('LIST');
-		blob->AddR4B((u32)getSize() - 8);
-		blob->Add4B(_chunkID);
-		blob->FileWrite(blob->GetLength(), Destination);
-		delete blob;
+		CBlob blob;
+		blob.Add4B('LIST');
+		blob.AddR4B((u32)getSize() - 8);
+		blob.Add4B(_chunkID);
+		if (blob.FileWrite(blob.GetLength(), Destination) != blob.GetLength())
+			return false;
 		size_t counts = _children.GetCount();
 		for (size_t i = 0; i < counts; i++)
-			_children[i]->save(Source, Destination);		
+		{
+			if (!_children[i]->save(Source, Destination))
+				return false;
+		}
 	}
 	return true;
 }

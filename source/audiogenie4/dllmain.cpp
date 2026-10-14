@@ -44,6 +44,8 @@ extern "C" BOOL WINAPI DllMainW(HINSTANCE hInstance, DWORD dwReason, LPVOID lpRe
 
 BYTE GetFileFormat(FILE *Stream)
 {
+	// this file's own ID3v2 size: a file without ID3v2 kept the previous file's (4.0.4.6 and earlier)
+	CTools::ID3v2Size = 0;
 	BYTE result = header.ReadFromFile(Stream);
 	if (result == AUDIO_FORMAT_ID3V2)
 	{
@@ -103,6 +105,41 @@ BYTE GetFormat(LPCWSTR FileName)
 	return result;
 }
 
+// The plain comment: the COMM without a description, "eng" preferred; else the first COMM that isn't iTunes data
+// (iTunNORM, iTunSMPB...), e.g. "ID3v1 Comment". The first COMM of any kind was taken, often iTunNORM, and the save
+// then copied its hex text into the plain comment (4.0.4.6 and earlier)
+static CID3F_COMM* findPlainComment()
+{
+	CID3F_COMM *result = NULL, *described = NULL;
+	size_t pos = 0;
+	CID3_Frame *found;
+	while ((found = id3v2.findNextFrame(F_COMM, pos)) != NULL)
+	{
+		CID3F_COMM *comm = cCOMM(found);
+		if (!comm->getDescription().IsEmpty())
+		{
+			if (described == NULL && comm->getDescription().Left(4).CompareNoCase(_T("iTun")) != 0)
+				described = comm;
+			continue;
+		}
+		if (comm->getLanguage().CompareNoCase(_T("eng")) == 0)
+			return comm;
+		if (result == NULL)
+			result = comm;
+	}
+	return (result != NULL) ? result : described;
+}
+
+// FLAC and WAV saves rewrite the file from the analyzed file's layout (block lengths, chunk positions), so they
+// only save into the analyzed file itself: another file was overwritten with that layout (4.0.4.6 and earlier)
+static bool isAnalyzedFile(LPCWSTR FileName, short format)
+{
+	if (Format == format && !lastFile.IsEmpty() && lastFile.CompareNoCase(FileName) == 0)
+		return true;
+	CTools::instance().setLastError(ERR_INVALID_FILENAME);
+	return false;
+}
+
 void ClearAllTags()
 {
 	endung.Empty();
@@ -130,6 +167,9 @@ void ClearAllTags()
 	tta.ResetData();
 	wavpack.ResetData();
 	CTools::instance().reset();
+	// id3v2.ReadFromFile resets these only for a file with ID3v2: one without kept the previous file's version (4.0.4.6 and earlier)
+	CTools::ID3V2oldTagVersion = 0;
+	CTools::ID3V2formatChosen = false;
 	Format = 0;
 	audio = &defaultaudio;
 	Format = AUDIO_FORMAT_UNKNOWN;
@@ -148,9 +188,14 @@ void ClearAllTags()
 */
 extern "C" long __stdcall AUDIOAnalyzeFileW(LPCWSTR FileName)
 {
+	// FileName may point into lastFile (e.g. APERemoveTagW): copy it before lastFile is emptied. lastFile names the
+	// cleared state only once the open succeeds: a failed analyze left the previous file there, and a following
+	// *SaveChangesW wrote the cleared tags into it (4.0.4.6 and earlier)
+	CAtlString fileName(getValidPointer(FileName));
+	FileName = fileName;
 	ClearAllTags();
+	lastFile.Empty();
 	FILE *Source;
-	FileName = getValidPointer(FileName);
 	errno = 0;
 	ATLTRACE(_T("Analysiere %s\n"), FileName);
 	if ( (Source = _wfsopen(FileName, READ_ONLY, _SH_DENYNO)) != NULL)
@@ -287,9 +332,9 @@ extern "C" long __stdcall AUDIOAnalyzeFileW(LPCWSTR FileName)
 		{			
 			Album = id3v2.GetText(F_TALB);
 			Artist = id3v2.GetText(F_TPE1);
-			CID3_Frame *frame = id3v2.findFrame(F_COMM);
+			CID3F_COMM *frame = findPlainComment();
 			if (frame != NULL)
-				Comment = cCOMM(frame)->getText();
+				Comment = frame->getText();
 			else
 				Comment.Empty();
 
@@ -297,6 +342,8 @@ extern "C" long __stdcall AUDIOAnalyzeFileW(LPCWSTR FileName)
 			Title = id3v2.GetText(F_TIT2);
 			Track = id3v2.GetText(F_TRCK);
 			Year = id3v2.GetText(F_TYER);
+			if (Year.IsEmpty())
+				Year = id3v2.GetText(F_TDRC); // v2.4 has no TYER (4.0.4.6 and earlier read nothing)
 			Composer = id3v2.GetText(F_TCOM);
 		}
 		else if (CTools::APESize > 0)
@@ -417,9 +464,10 @@ extern "C" short __stdcall AUDIOSaveChangesToFileW(LPCWSTR FileName)
 {
 	CTools::instance().setLastError(0);
 	FileName = getValidPointer(FileName);
-	Format = (short)GetFormat(FileName);
+	// the target's format in a local: Format is the analyzed file's and was overwritten by a save to another file (4.0.4.6 and earlier)
+	short targetFormat = (short)GetFormat(FileName);
 	bool result;
-	switch (Format)
+	switch (targetFormat)
 	{
 	case AUDIO_FORMAT_WMA:
 		wma.SetUserItem(WM_ALBUMTITLE, Album);
@@ -435,6 +483,8 @@ extern "C" short __stdcall AUDIOSaveChangesToFileW(LPCWSTR FileName)
 			AUDIOAnalyzeFileW(FileName);
 		return b2s(result);		
 	case AUDIO_FORMAT_FLAC:
+		if (!isAnalyzedFile(FileName, AUDIO_FORMAT_FLAC))
+			return b2s(false);
 		flac.SetUserItem(VORBIS_ALBUM, Album);
 		flac.SetUserItem(VORBIS_ARTIST, Artist);
 		flac.SetUserItem(VORBIS_COMMENT, Comment);
@@ -501,6 +551,8 @@ extern "C" short __stdcall AUDIOSaveChangesToFileW(LPCWSTR FileName)
 		CTools::instance().setLastError(ERR_TAG_NOT_ALLOWED);
 		return b2s(false);
 	case AUDIO_FORMAT_WAV:
+		if (!isAnalyzedFile(FileName, AUDIO_FORMAT_WAV))
+			return b2s(false);
 		wav.setTextFrame(WAV_IPRD, Album);
 		wav.setTextFrame(WAV_IART, Artist);
 		wav.setTextFrame(WAV_INAM, Title);
@@ -516,11 +568,44 @@ extern "C" short __stdcall AUDIOSaveChangesToFileW(LPCWSTR FileName)
 	default:
 		id3v2.SetText(F_TALB, Album);
 		id3v2.SetText(F_TPE1, Artist);
-		id3v2.replaceFrame(new CID3F_COMM(_T("eng"), EMPTY, Comment));
+		{
+			// the plain comment read by AUDIOAnalyzeFileW, in its own language; never a described COMM (iTunNORM etc.)
+			CID3F_COMM *plain = findPlainComment();
+			if (Comment.IsEmpty())
+			{
+				// an empty comment removes the plain COMM (an empty one was written)
+				int index = 0;
+				size_t pos = 0;
+				CID3_Frame *found;
+				while ((found = id3v2.findNextFrame(F_COMM, pos)) != NULL)
+				{
+					index++;
+					if (found == plain)
+					{
+						id3v2.deleteFrame(F_COMM, index);
+						break;
+					}
+				}
+			}
+			else
+			{
+				CAtlString language = (plain != NULL && plain->getLanguage().GetLength() == 3) ? plain->getLanguage() : CAtlString(_T("eng"));
+				CAtlString description = (plain != NULL) ? plain->getDescription() : CAtlString();
+				id3v2.replaceFrame(new CID3F_COMM(language, description, Comment));
+			}
+		}
 		id3v2.SetText(F_TCON, Genre);
 		id3v2.SetText(F_TIT2, Title);
 		id3v2.SetText(F_TRCK, Track);
-		id3v2.SetText(F_TYER, Year);
+		{
+			// both: the save keeps only the one of its version, TYER up to v2.3, TDRC in v2.4 (4.0.4.6 and earlier wrote
+			// TYER only, which a v2.4 save dropped). TYER holds the year alone, not a v2.4 timestamp.
+			CAtlString yearOnly(Year);
+			if (yearOnly.GetLength() > 4 && yearOnly[4] == _T('-'))
+				yearOnly = yearOnly.Left(4);
+			id3v2.SetText(F_TYER, yearOnly);
+			id3v2.SetText(F_TDRC, Year);
+		}
 		id3v2.SetText(F_TCOM, Composer);
 		return b2s(id3v2.SaveToFile(FileName));		
 	}  
@@ -1201,19 +1286,27 @@ extern "C" short __stdcall FLACAddPictureFileW(LPCWSTR FileName, LPCWSTR Descrip
 * @paramD UInt32 Length die Grösse des Arrays in Bytes
 * @paramD LPCWSTR Beschreibung Kommentar zu dem Bild
 * @paramD Int16 PictureTyp Typ des Bildes von 0 bis 20 <br />00 = Other<br />01 = 32*32 pixels file icon<br />02 = Other file icon<br />03 = Cover front<br />04 = Cover back<br />05 = Leaflet page<br />06 = Media ( label side of CD )<br />07 = Lead artist/solist<br />08 = Artist/Performer<br />09 = Conductor<br />10 = Band/Orchestra<br />11 = Composer<br />12 = Lyricist/text writer<br />13 = Recording Location<br />14 = During recording<br />15 = During performance<br />16 = Movie/video screen capture<br />17 = A bright coloured fish<br />18 = Illustration<br />19 = Band/artist logotype<br />20 = Publisher/Studio logotype
-* @returnD Int16 -1 falls frame ersetzt wurde, 0 falls neuer Eintrag erfolgte
+* @returnD Int16 normalerweise -1, bei Fehler 0
 * @paramE Pointer pointer to a byte array with the picture datas
 * @paramE UInt32 Length the size of the array
 * @paramE LPCWSTR description a description of the picture
 * @paramE Int16 index Index from 1 to n; if n is not present a new entry will be created
 * @paramE Int16 picture type from 0 to 20 <br />00 = Other<br />01 = 32*32 pixels file icon<br />02 = Other file icon<br />03 = Cover front<br />04 = Cover back<br />05 = Leaflet page<br />06 = Media ( label side of CD )<br />07 = Lead artist/solist<br />08 = Artist/Performer<br />09 = Conductor<br />10 = Band/Orchestra<br />11 = Composer<br />12 = Lyricist/text writer<br />13 = Recording Location<br />14 = During recording<br />15 = During performance<br />16 = Movie/video screen capture<br />17 = A bright coloured fish<br />18 = Illustration<br />19 = Band/artist logotype<br />20 = Publisher/Studio logotype
-* @returnE Int16 -1 if frame was replaced, 0 if frame was added
+* @returnE Int16 normally -1, 0 on error
 */
 extern "C" short __stdcall FLACAddPictureArrayW(BYTE *arr, u32 Length, LPCWSTR Description, short PictureType)
 {
+	// 4 bytes at least, as for WMAAddPictureArrayW
+	if (arr == NULL || Length < 4)
+	{
+		CTools::instance().setLastError(ERR_PICTUREARRAY_TOO_SMALL);
+		return b2s(false);
+	}
 	CFlacCover *pic = new CFlacCover( (BYTE)PictureType, getValidPointer(Description));
-	pic->data.AddMemory(arr, Length);
-	return b2s(flac.replaceCover(pic));
+	pic->setPictureArray(arr, Length); // MIME and picture infos too; they were left empty (4.0.4.6 and earlier)
+	// -1 on success: replaceCover's replaced/added came out as 0 for a new picture, read as an error (4.0.4.6 and earlier)
+	flac.replaceCover(pic);
+	return b2s(true);
 }
 
 
@@ -1405,7 +1498,7 @@ extern "C" short __stdcall FLACSaveChangesToFileW(LPCWSTR FileName)
 {
 	FileName = getValidPointer(FileName);
 	if (GetFormat(FileName) == AUDIO_FORMAT_FLAC)
-		return b2s(flac.SaveToFile(FileName));
+		return b2s(isAnalyzedFile(FileName, AUDIO_FORMAT_FLAC) && flac.SaveToFile(FileName));
 	CTools::instance().setLastError(ERR_TAG_NOT_ALLOWED);
 	return b2s(false);  
 }
@@ -2077,6 +2170,16 @@ extern "C" short __stdcall MPEGIsVBRW()
 }
 
 
+// The header bits are only set in an MPEG file: in any other a false frame sync was found and a byte of its
+// audio or tag data changed (4.0.4.6 and earlier)
+static bool isMpegFile(LPCWSTR FileName)
+{
+	if (GetFormat(FileName) == AUDIO_FORMAT_MPEG)
+		return true;
+	CTools::instance().setLastError(ERR_TAG_NOT_ALLOWED);
+	return false;
+}
+
 /**
 * Methode: MPEGSetCopyrightedW
 * @link MPEG
@@ -2092,6 +2195,8 @@ extern "C" short __stdcall MPEGIsVBRW()
 */
 extern "C" short __stdcall MPEGSetCopyrightedW(LPCWSTR FileName, short newValue)
 {
+	if (!isMpegFile(getValidPointer(FileName)))
+		return b2s(false);
 	return b2s(mpeg.SetCopyrightBit(getValidPointer(FileName), (newValue != 0) ));
 }
 
@@ -2111,6 +2216,8 @@ extern "C" short __stdcall MPEGSetCopyrightedW(LPCWSTR FileName, short newValue)
 */
 extern "C" short __stdcall MPEGSetOriginalW(LPCWSTR FileName, short newValue)
 {
+	if (!isMpegFile(getValidPointer(FileName)))
+		return b2s(false);
 	return b2s(mpeg.SetOriginalBit(getValidPointer(FileName), (newValue != 0) ));
 }
 
@@ -2130,6 +2237,8 @@ extern "C" short __stdcall MPEGSetOriginalW(LPCWSTR FileName, short newValue)
 */
 extern "C" short __stdcall MPEGSetPrivateW(LPCWSTR FileName, short newValue)
 {
+	if (!isMpegFile(getValidPointer(FileName)))
+		return b2s(false);
 	return b2s(mpeg.SetPrivateBit(getValidPointer(FileName), (newValue != 0) ));
 }
 
@@ -2971,7 +3080,9 @@ extern "C" short __stdcall WMAGetPictureFileW(LPCWSTR FileName, short Index)
 */
 extern "C" long __stdcall WMAGetPictureArrayW(BYTE *arr, u32 maxLen, short Index)
 {
-	return (long)wma.GetPictureArray(arr, maxLen, Index);	
+	// -1 on error as documented and as for FLAC/MP4/ID3v2; 0 came back for a missing index or a too small array (4.0.4.6 and earlier)
+	size_t len = wma.GetPictureArray(arr, maxLen, Index);
+	return (len == 0) ? -1 : (long)len;
 }
 
 /**
@@ -3959,8 +4070,9 @@ extern "C" BSTR __stdcall ID3V1GetVersionW()
 extern "C" short __stdcall ID3V1RemoveTagFromFileW(LPCWSTR FileName)
 {
 	FileName = getValidPointer(FileName);
-	if (lyrics.Exists())
-		lyrics.RemoveFromFile(FileName);
+	// always: lyrics.Exists() is the analyzed file's, not FileName's, and its Lyrics3 tag was left orphaned before
+	// the ID3v1 tag it belongs to (4.0.4.6 and earlier). RemoveFromFile does nothing without a LYRICSBEGIN.
+	lyrics.RemoveFromFile(FileName);
 	if (id3v1.RemoveFromFile(FileName))
 	{
 		AUDIOAnalyzeFileW(FileName);
@@ -3980,8 +4092,7 @@ extern "C" short __stdcall ID3V1RemoveTagFromFileW(LPCWSTR FileName)
 */
 extern "C" short __stdcall ID3V1RemoveTagW()
 {
-	if (lyrics.Exists())
-		lyrics.RemoveFromFile(lastFile);
+	lyrics.RemoveFromFile(lastFile); // always, see ID3V1RemoveTagFromFileW
 	if (id3v1.RemoveFromFile(lastFile))
 	{ 
 		AUDIOAnalyzeFileW(lastFile);
@@ -5565,7 +5676,8 @@ extern "C" short __stdcall ID3V2AddChapterW(LPCWSTR ID, LPCWSTR Title, LPCWSTR D
 extern "C" short __stdcall ID3V2AddChildElementW(LPCWSTR ParentTocID, LPCWSTR ChildID)
 {
 	id3frame = id3v2.findFrame(getValidPointer(ParentTocID));
-	if (id3frame == NULL)
+	// the ID may be a CHAP's: used as a CTOC it corrupted the heap (4.0.4.6 and earlier)
+	if (id3frame == NULL || !cCHAPTER(id3frame)->isCTOC())
 		return b2s(false);
 	cCTOC(id3frame)->addChildElement(getValidPointer(ChildID));
 	return b2s(true);
@@ -5587,9 +5699,49 @@ extern "C" short __stdcall ID3V2AddChildElementW(LPCWSTR ParentTocID, LPCWSTR Ch
 extern "C" short __stdcall ID3V2DeleteChildElementW(LPCWSTR ParentTocID, LPCWSTR ChildID)
 {
 	id3frame = id3v2.findFrame(getValidPointer(ParentTocID));
-	if (id3frame == NULL)
+	if (id3frame == NULL || !cCHAPTER(id3frame)->isCTOC()) // a CHAP is no CTOC, see ID3V2AddChildElementW
 		return b2s(false);
-	return cCTOC(id3frame)->deleteChildElement(getValidPointer(ChildID));	
+	return b2s(cCTOC(id3frame)->deleteChildElement(getValidPointer(ChildID))); // -1 as documented, not the count
+}
+
+// 4.0.4.7: the child IDs are copied and the element unlinked and deleted before its children are: a TOC listing itself
+// or a TOC higher up recursed without end, and a child deleted under the loop left it reading freed frames
+// (4.0.4.6 and earlier). The depth guard is for a chain of TOCs too long for the stack.
+static void deleteAddendum(const CAtlString &ID, int depth)
+{
+	CID3_Frame *delFrame = id3v2.findFrame(ID);
+	if (delFrame == NULL)
+		return;
+	CID3F_Chapter *chap = cCHAPTER(delFrame);
+	// Zuerst alle Subframes löschen
+	// firstly delete all subframes
+	chap->deleteAllFrames();
+	// falls CTOC Element: rekursiv untergeordnete Zweige entfernen
+	// in case of CTOC elemts: Remove subsequent nodes recursively (after the element itself is gone)
+	CAtlArray<CAtlString> children;
+	if (chap->isCTOC())
+	{
+		CID3F_CTOC *toc = cCTOC(chap);
+		for (u16 i = toc->getNumberOfEntries(); i > 0; i--)
+			children.Add(toc->getChildElementID(i));
+	}
+	// Verweise aus verbleibenden TOCs löschen
+	// delete references from remaining TOCs
+	size_t pos = 0;
+	CID3_Frame *found;
+	while ((found = id3v2.findNextFrame(F_CTOC, pos)) != NULL)
+		cCTOC(found)->deleteChildElement(ID);
+	// zu guter letzt Element selbst löschen
+	// finally delete last element itself
+	id3v2.deleteAllFrames(ID);
+	id3frame = NULL; // may have been one of the deleted frames
+	if (depth >= 256)
+		return;
+	for (size_t i = 0; i < children.GetCount(); i++)
+	{
+		if (children[i].Compare(ID) != 0)
+			deleteAddendum(children[i], depth + 1);
+	}
 }
 
 /**
@@ -5606,38 +5758,10 @@ extern "C" short __stdcall ID3V2DeleteChildElementW(LPCWSTR ParentTocID, LPCWSTR
 extern "C" short __stdcall ID3V2DeleteAddendumW(LPCWSTR ID)
 {
 	ATLTRACE(_T("lösche %s\n"), ID);
-	CID3_Frame *delFrame = id3v2.findFrame(getValidPointer(ID));
-	if (delFrame == NULL)
-		return-b2s(false);
-	CID3F_Chapter *chap = cCHAPTER(delFrame);
-	// Zuerst alle Subframes löschen
-	// firstly delete all subframes
-	chap->deleteAllFrames();
-	// falls CTOC Element: rekursiv untergeordnete Zweige entfernen
-	// in case of CTOC elemts: Remove subsequent nodes recursively
-	if (chap->isCTOC())
-	{
-		CID3F_CTOC *toc = cCTOC(chap);
-		for (u16 i = toc->getNumberOfEntries(); i > 0; i--)
-		{
-			ATLTRACE(_T(" rekursiv lösche %s\n"), toc->getChildElementID(i));
-			ID3V2DeleteAddendumW(toc->getChildElementID(i));
-		}
-	}
-	// Verweise aus verbleibenden TOCs löschen
-	// delete references from remaining TOCs
-	size_t pos = 0;
-	CID3_Frame *found;
-	do
-	{
-		found = id3v2.findNextFrame(F_CTOC, pos);
-		if (found != NULL)
-			cCTOC(found)->deleteChildElement(ID);
-
-	} while (found != NULL);
-	// zu guter letzt Element selbst löschen
-	// finally delete last element itself
-	id3v2.deleteAllFrames(getValidPointer(ID));
+	CAtlString id(getValidPointer(ID));
+	if (id3v2.findFrame(id) == NULL)
+		return b2s(false);
+	deleteAddendum(id, 0);
 	return b2s(true);
 }
 
@@ -7442,7 +7566,7 @@ extern "C" short __stdcall ID3V2GetReverbPremixRightToLeftW()
 */
 extern "C" short __stdcall ID3V2AddSeekOffsetW(long offset)
 {
-	return id3v2.replaceFrame(new CID3F_SEEK(offset));
+	return b2s(id3v2.replaceFrame(new CID3F_SEEK(offset)));
 }
 
 /**
@@ -7855,9 +7979,7 @@ extern "C" short __stdcall ID3V2RemoveTagFromFileW(LPCWSTR FileName)
 extern "C" short __stdcall ID3V2RemoveTagW()
 {
 	if (id3v2.RemoveFromFile(lastFile))
-	{
 		return b2s(true);	
-	}
 	return b2s(false);  
 }
 
@@ -8179,6 +8301,8 @@ extern "C" short __stdcall WAVSaveChangesToFileW(LPCWSTR FileName)
 	FileName = getValidPointer(FileName);	
 	if (GetFormat(FileName) != AUDIO_FORMAT_INVALID)
 	{
+		if (!isAnalyzedFile(FileName, AUDIO_FORMAT_WAV))
+			return b2s(false);
 		bool result = wav.SaveToFile(FileName);
 		if (result && !lastFile.IsEmpty() && lastFile.CompareNoCase(FileName) == 0)
 			AUDIOAnalyzeFileW(FileName);

@@ -49,7 +49,38 @@ CWAVFile::~CWAVFile()
 
 bool CWAVFile::ReadWAV(FILE *Stream)
 {
-	return mainContainer->load(Stream, CTools::ID3v2Size, CTools::FileSize - CTools::ID3v1Size);
+	// 4.0.4.7: the file's own 64-bit length (CTools::FileSize is a long: -1 for a file of 2 GB or more)
+	__int64 end = _filelengthi64(_fileno(Stream)) - CTools::ID3v1Size;
+	if (end <= CTools::ID3v2Size)
+		return false;
+	if (end > 0xFFFFFFFF)
+		end = 0xFFFFFFFF;
+	return mainContainer->load(Stream, CTools::ID3v2Size, (u32)end);
+}
+
+/* -------------------------------------------------------------------------- */
+
+// 4.0.4.7: the size of an ID3v2 tag in front of the file, by the same rule the analysis uses (CID3V2::ReadHeader),
+// read from the file being saved instead of the globals of the last analyzed file
+static __int64 WAVReadID3v2Size(FILE *Stream, __int64 fileLen)
+{
+	BYTE buf[10];
+	if (_fseeki64(Stream, 0, SEEK_SET) != 0 || fread(buf, 1, 10, Stream) != 10)
+		return 0;
+	if (buf[0] != 'I' || buf[1] != 'D' || buf[2] != '3' || buf[3] == 0xFF || buf[4] == 0xFF)
+		return 0;
+	__int64 size = ((__int64)buf[6] << 21) + (buf[7] << 14) + (buf[8] << 7) + buf[9] + 10;
+	if (buf[3] == 4 && (buf[5] & 0x10) == 0x10)
+		size += 10; // v2.4 footer (an extended header is inside the size)
+	return (size > fileLen) ? 0 : size;
+}
+
+static bool WAVHasID3v1(FILE *Stream, __int64 fileLen)
+{
+	char buf[3];
+	if (fileLen <= 132 || _fseeki64(Stream, fileLen - 128, SEEK_SET) != 0 || fread(buf, 1, 3, Stream) != 3)
+		return false;
+	return (memcmp(buf, "TAG", 3) == 0);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -361,16 +392,16 @@ float CWAVFile::GetDuration()
 	CWAVFormatChunk *fmt = mainContainer->getFormatChunk();
 	if (fmt == NULL)
 		return 0.0f;
-	long SampleNumber = 0;
-	CWAVChunk *chunk = mainContainer->find('data');
-	if (chunk == 0)
+	// 4.0.4.7: BlockAlign 0 divided by zero (a crash), and the size was a long (4.0.4.6 and earlier)
+	CWAVDataChunk *chunk = mainContainer->getDataChunk();
+	if (chunk == NULL)
 		return 0.0f;
-	long size = (long)chunk->getSize();
-	SampleNumber = size / fmt->BlockAlign;
-	if (SampleNumber <= 0 && fmt->BytesPerSecond > 0)
-		return (float)size / (float) fmt->BytesPerSecond;
+	unsigned __int64 size = chunk->getDataSize();
+	unsigned __int64 SampleNumber = (fmt->BlockAlign > 0) ? size / fmt->BlockAlign : 0;
 	if (SampleNumber > 0 && fmt->SampleRate > 0)
-		return (float)SampleNumber / (float) fmt->SampleRate;
+		return (float)((double)SampleNumber / (double) fmt->SampleRate);
+	if (fmt->BytesPerSecond > 0)
+		return (float)((double)size / (double) fmt->BytesPerSecond);
 	return 0;
 }
 
@@ -437,18 +468,19 @@ WORD CWAVFile::GetBitsPerSample()
 	CWAVFormatChunk *fmt = mainContainer->getFormatChunk();
 	if (fmt == NULL)
 		return 0;
+	// BlockAlign is the bytes of one sample of all channels (4.0.4.6 and earlier multiplied by the channels)
 	if (fmt->BitsPerSample == 0 && fmt->ChannelNumber > 0)
-		return (WORD)(fmt->BlockAlign * 8 * fmt->ChannelNumber);
+		return (WORD)(fmt->BlockAlign * 8 / fmt->ChannelNumber);
 	return (WORD)fmt->BitsPerSample; 
 };
 
 long CWAVFile::GetHeaderSize()
 { 
 	// FileSize - DataSize = HeaderSize
-	CWAVChunk *chunk = mainContainer->find('data');
+	CWAVDataChunk *chunk = mainContainer->getDataChunk();
 	if (chunk == 0)
 		return CTools::FileSize;
-	return CTools::FileSize - (long)chunk->getSize() + 8;
+	return CTools::FileSize - (long)chunk->getDataSize();
 };
 
 short CWAVFile::GetFormatID()
@@ -519,7 +551,7 @@ void CWAVFile::setTextFrame(u32 FrameID, CAtlString newText)
 	{	
 		chunk->getData()->Clear();
 		if (!newText.IsEmpty())
-			chunk->getData()->AddEncodedString(TEXT_ENCODED_ANSI, newText, false, true);
+			WAVAddAnsiString(chunk->getData(), newText, true);
 		return;
 	}
 	// Neuanlage
@@ -556,29 +588,62 @@ CAtlString CWAVFile::getINFOChunkIDs()
 
 bool CWAVFile::SaveToFile(LPCWSTR FileName)
 {
-	// Ermittle den Anfangsbereich der Daten
+	// 4.0.4.7: the file is read again here and the audio is copied from its own 'data' chunk; without one (or with a
+	// chunk that can't be read whole) nothing is written. An ID3v2 tag in front and the bytes after the RIFF chunks
+	// (ID3v1, APE) are kept. Every read and write is checked, and the copy replaces the original in one step only
+	// when all of it was written. Up to 4.0.4.6 a 'data' chunk the walk skipped (size 0, or past the end of an
+	// unfinished recording) gave a file without audio that replaced the original, a failed temp file returned
+	// true, _fcloseall closed every stream of the process, and the original was deleted before the rename.
 	FILE *Source;
 	FILE *Destination;
 	CAtlString NewFileName(FileName);
-	//long FrameOldSize = 0;
-	if ( (Source = _wfsopen(FileName, READ_AND_WRITE, _SH_DENYNO)) == NULL)
+	errno = 0;
+	if ( (Source = _wfsopen(FileName, READ_ONLY, _SH_DENYNO)) == NULL)
 	{
 		CTools::instance().setLastError(errno);
 		return false;
 	}
-	fseek(Source, CTools::ID3v2Size, SEEK_SET);
-	CTools::FileSize = _filelength(_fileno(Source));
-	CWAVRIFFContainer *newData = new CWAVRIFFContainer();
-	if (!newData->load(Source, CTools::ID3v2Size, CTools::FileSize -  CTools::ID3v1Size))
+	__int64 fileLen = _filelengthi64(_fileno(Source));
+	if (fileLen <= 0 || fileLen >= 0xFFFFFFFF)
 	{
+		// (a RIFF file can't be longer)
 		CTools::instance().setLastError(ERR_INVALID_FORMAT);
-		newData->Remove();
-		delete newData;
 		fclose(Source);
 		return false;
 	}
-	newData->Remove();
-	delete newData;
+	__int64 id3v2Size = WAVReadID3v2Size(Source, fileLen);
+	__int64 audioEnd = fileLen - (WAVHasID3v1(Source, fileLen) ? 128 : 0);
+	CWAVRIFFContainer target;
+	if (audioEnd <= id3v2Size || !target.load(Source, (u32)id3v2Size, (u32)audioEnd))
+	{
+		CTools::instance().setLastError(ERR_INVALID_FORMAT);
+		fclose(Source);
+		return false;
+	}
+	CWAVDataChunk *targetData = target.getDataChunk();
+	CWAVDataChunk *data = mainContainer->getDataChunk();
+	if (targetData == NULL || data == NULL)
+	{
+		CTools::instance().setLastError(ERR_NO_DATACHUNK);
+		fclose(Source);
+		return false;
+	}
+	if (target.hasLoadErrors() || mainContainer->hasLoadErrors())
+	{
+		CTools::instance().setLastError(ERR_INVALID_FORMAT);
+		fclose(Source);
+		return false;
+	}
+	data->setRange(targetData->getOffset(), targetData->getDataSize());
+	unsigned __int64 trailingStart = target.getWalkEnd();
+	if (trailingStart > (unsigned __int64)fileLen)
+		trailingStart = (unsigned __int64)fileLen;
+	if ((unsigned __int64)id3v2Size + mainContainer->getSize64() + ((unsigned __int64)fileLen - trailingStart) >= 0xFFFFFFFF)
+	{
+		CTools::instance().setLastError(ERR_INVALID_FORMAT);
+		fclose(Source);
+		return false;
+	}
 
 	CTools::instance().writeDebug(_T("Rebuild wav tag"));
 	// rebuild File
@@ -590,22 +655,33 @@ bool CWAVFile::SaveToFile(LPCWSTR FileName)
 		fclose(Source);
 		return false;
 	};
-	mainContainer->save(Source, Destination);
-	_flushall();
-	_fcloseall();
-	CTools::instance().doEventsNow();
-	/* Replace old file and delete temporary file */
-	if (_wremove(FileName) != 0)
+	bool copied = true;
+	if (id3v2Size > 0)
+		copied = (_fseeki64(Source, 0, SEEK_SET) == 0 && WAVCopyBytes(Source, Destination, id3v2Size));
+	if (copied)
+		copied = mainContainer->save(Source, Destination);
+	if (copied && trailingStart < (unsigned __int64)fileLen)
+		copied = (_fseeki64(Source, trailingStart, SEEK_SET) == 0 && WAVCopyBytes(Source, Destination, fileLen - trailingStart));
+	// Only this save's own streams: _fcloseall closed every stream the process had open
+	if (fflush(Destination) != 0 || ferror(Destination))
+		copied = false;
+	if (fclose(Destination) != 0)
+		copied = false;
+	fclose(Source);
+
+	if (!copied)
 	{
-		// Lösche auch temp file
-		_wremove(NewFileName);
-		CTools::instance().setLastError(errno);
+		_wremove(NewFileName); // the original is untouched
+		CTools::instance().setLastError(errno != 0 ? errno : EIO);
 		return false;
 	}
 	CTools::instance().doEventsNow();
-	if (_wrename(NewFileName, FileName) != 0)
+	/* Replace the original with the copy in one step: it is either the old file or the new one, never missing */
+	if (!MoveFileExW(NewFileName, FileName, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
 	{
-		CTools::instance().setLastError(errno);
+		DWORD err = GetLastError();
+		_wremove(NewFileName);
+		CTools::instance().setLastError(err == ERROR_ACCESS_DENIED || err == ERROR_SHARING_VIOLATION ? EACCES : EIO);
 		return false;
 	}
 	return true;

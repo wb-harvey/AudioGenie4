@@ -39,10 +39,12 @@ CWAVFormatChunk::~CWAVFormatChunk(void)
 bool CWAVFormatChunk::load(FILE *Stream, u32 offset, u32 size)
 {
 	ATLTRACE(_T("Format chunk with %i bytes at Offset %u\n"), size, offset);
-	fseek(Stream, offset, SEEK_SET);
-	_data.FileRead(size, Stream);
-	if (_data.GetLength() < 16)
+	// 4.0.4.7: the bounded, checked read of CWAVChunk; false only when the chunk could not be read whole
+	if (!CWAVChunk::load(Stream, offset, size))
 		return false;
+	if (_data.GetLength() < 16)
+		return true; // too short to describe the format: the values stay 0
+
 	FormatID = _data.GetR2B(0);
 	ChannelNumber = _data.GetR2B(2);
 	SampleRate = _data.GetR4B(4);

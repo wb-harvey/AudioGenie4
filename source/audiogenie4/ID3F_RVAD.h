@@ -32,9 +32,11 @@ public:
 	bool equals(CID3_Frame *frame);
 	void decode();
 	void encode();
+	u32 getStoreID();
 	CAtlString getIdentification();	
 private:
 	CAtlString _identification;
 	long _oldID;
+	bool _fromFile; // its data is in the format of its frame ID in the file (_oldID)
 	BYTE lastTag;
 };

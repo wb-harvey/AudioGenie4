@@ -25,6 +25,67 @@
 #include "stdafx.h"
 #include "VorbisComment.h"
 #include "Tools.h"
+#include "io.h"
+
+// Comments are decoded and encoded here with buffers of their own size: through the shared text buffer (256 KB)
+// a longer value (a METADATA_BLOCK_PICTURE in base64) read empty, and so did one that isn't valid UTF-8; both
+// were then dropped on the next save (4.0.4.6 and earlier). Invalid UTF-8 is read as Windows-1252.
+static CAtlString DecodeComment(const BYTE *p, size_t n)
+{
+	CAtlString result;
+	const BYTE *nul = (n > 0) ? (const BYTE *)memchr(p, 0, n) : NULL;
+	if (nul != NULL)
+		n = nul - p; // (as before: the text ends at a null byte)
+	if (n == 0 || n > 0x7FFFFFFF)
+		return result;
+	UINT cp = CP_UTF8;
+	int wn = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, (LPCSTR)p, (int)n, NULL, 0);
+	if (wn <= 0)
+	{
+		cp = 1252;
+		wn = MultiByteToWideChar(cp, 0, (LPCSTR)p, (int)n, NULL, 0);
+		if (wn <= 0)
+			return result;
+	}
+	wchar_t *w = (wchar_t *)malloc(((size_t)wn + 1) * sizeof(wchar_t));
+	if (w == NULL)
+	{
+		CTools::instance().setLastError(ERR_NOT_ENOUGH_MEMORY, (unsigned int)((wn + 1) * sizeof(wchar_t)));
+		return result;
+	}
+	wn = MultiByteToWideChar(cp, cp == CP_UTF8 ? MB_ERR_INVALID_CHARS : 0, (LPCSTR)p, (int)n, w, wn);
+	try
+	{
+		if (wn > 0)
+			result.SetString(w, wn);
+	}
+	catch (...)
+	{
+		result.Empty();
+	}
+	free(w);
+	return result;
+}
+
+static void EncodeComment(CBlob &dst, const CAtlString &s)
+{
+	int len = s.GetLength();
+	if (len <= 0)
+		return;
+	int n = WideCharToMultiByte(CP_UTF8, 0, s, len, NULL, 0, NULL, NULL);
+	if (n <= 0)
+		return;
+	char *buf = (char *)malloc(n);
+	if (buf == NULL)
+	{
+		CTools::instance().setLastError(ERR_NOT_ENOUGH_MEMORY, n);
+		return;
+	}
+	n = WideCharToMultiByte(CP_UTF8, 0, s, len, buf, n, NULL, NULL);
+	if (n > 0)
+		dst.AddMemory(buf, n);
+	free(buf);
+}
 
 //////////////////////////////////////////////////////////////////////
 // Konstruktion/Destruktion
@@ -60,7 +121,7 @@ void CVorbisComment::BuildVorbisComments(CBlob &Data)
 	//int maxLen = VendorInfo.GetLength();
 	Fields = (int)_items.GetCount();
 	// vendor info and number of fields
-	str.AddEncodedString(TEXT_ENCODED_UTF8, VendorInfo, false,false);
+	EncodeComment(str, VendorInfo);
 	Data.AddR4B((int)str.GetLength());
 	Data.AddBlob(str); 
 	Data.AddR4B(Fields);
@@ -75,7 +136,7 @@ void CVorbisComment::BuildVorbisComments(CBlob &Data)
 		//content+=_T("=");
 		//content+=item->value;
 		str.Clear();
-		str.AddEncodedString(TEXT_ENCODED_UTF8, content, false, false);
+		EncodeComment(str, content);
 		Data.AddR4B((int)str.GetLength());
 		Data.AddBlob(str);		
 	}
@@ -86,13 +147,24 @@ void CVorbisComment::AnalyzeVorbisComments(FILE *Stream)
 	long i, len = 0, Separator;
 	CBlob tmpBlob;
 	CAtlString temp;
+	// every length is checked against what is left of the file (the vendor's wasn't: a huge one was read, 4.0.4.6
+	// and earlier), and every read must be whole
+	__int64 fileLength = _filelengthi64(_fileno(Stream));
 	// Vendor
 	tmpBlob.FileRead(4, Stream);
+	if (tmpBlob.GetLength() != 4)
+		return;
 	len = tmpBlob.GetR4B(0);
+	if (len < 0 || len > fileLength - _ftelli64(Stream))
+		return;
 	tmpBlob.FileRead(len, Stream);
-	VendorInfo = tmpBlob.ConvertToUnicodeString(TEXT_ENCODED_UTF8);  
+	if ((long)tmpBlob.GetLength() != len)
+		return;
+	VendorInfo = DecodeComment(tmpBlob.m_pData, len);
 	// weiter gehts mit Anzahl der Felder
 	tmpBlob.FileRead(4, Stream);
+	if (tmpBlob.GetLength() != 4)
+		return;
 	Fields = tmpBlob.GetR4B(0);
 	if (Fields <= 0)
 		return;
@@ -100,11 +172,15 @@ void CVorbisComment::AnalyzeVorbisComments(FILE *Stream)
 	for (i = 0; i < Fields ; i++)
 	{
 		tmpBlob.FileRead(4, Stream);
+		if (tmpBlob.GetLength() != 4)
+			return;
 		len = tmpBlob.GetR4B(0);
-		if (len < 0 || len > CTools::FileSize)
+		if (len < 0 || len > fileLength - _ftelli64(Stream))
 			return;
 		tmpBlob.FileRead(len, Stream);
-		temp = tmpBlob.ConvertToUnicodeString(TEXT_ENCODED_UTF8);
+		if ((long)tmpBlob.GetLength() != len)
+			return;
+		temp = DecodeComment(tmpBlob.m_pData, len);
 		if ((Separator = temp.Find(_T("="))) > 0)
 		{
 			item = new structField;
@@ -131,9 +207,8 @@ void CVorbisComment::AnalyzeVorbisComments(CBlob &Data, size_t pos)
 	pos += 4;
 	if (len > total - pos)
 		return;
-	tmpBlob.AddMemory(Data.m_pData + pos, len);
+	VendorInfo = DecodeComment(Data.m_pData + pos, len);
 	pos += len;
-	VendorInfo = tmpBlob.ConvertToUnicodeString(TEXT_ENCODED_UTF8);
 	// Number of fields
 	if (pos + 4 > total)
 		return;
@@ -147,10 +222,8 @@ void CVorbisComment::AnalyzeVorbisComments(CBlob &Data, size_t pos)
 		pos += 4;
 		if (len > total - pos)
 			return;
-		tmpBlob.Clear();
-		tmpBlob.AddMemory(Data.m_pData + pos, len);
+		temp = DecodeComment(Data.m_pData + pos, len);
 		pos += len;
-		temp = tmpBlob.ConvertToUnicodeString(TEXT_ENCODED_UTF8);
 		if ((Separator = temp.Find(_T("="))) > 0)
 		{
 			item = new structField;
@@ -180,29 +253,42 @@ CAtlString CVorbisComment::GetUserItem(LPCWSTR key)
 
 void CVorbisComment::SetUserItem(LPCWSTR key, LPCWSTR value)
 {
-	size_t counts = _items.GetCount();
-	for (size_t i = 0; i < counts; i++)
+	// Every entry with this key is replaced (only the first was, while GetUserItem joins them all with "|": the
+	// value read back and saved grew by the other entries on every save, 4.0.4.6 and earlier). When the key had
+	// several entries, the value is split again at "|" into one entry each, so a multi-value field read and saved
+	// unchanged stays as it was; a key with one entry keeps a "|" in its value. An empty value removes them all.
+	bool empty = (value == 0 || wcslen(value) == 0);
+	CAtlString all(empty ? L"" : value);
+	size_t found = 0, position = _items.GetCount();
+	CAtlString name(key);
+	for (size_t i = _items.GetCount(); i-- > 0; )
 	{
 		item = _items.GetAt(i);
 		if (item->key.CompareNoCase(key) == 0)
 		{
-			item->value = value;
-			// Falls Wert leer ist, entferne auch Schluessel
-			if (value == 0 || wcslen(value) == 0)
-			{
-				delete item;
-				_items.RemoveAt(i);
-			}
-			return ;
+			found++;
+			position = i;
+			name = item->key; // (the file's spelling of the key, as before)
+			delete item;
+			_items.RemoveAt(i);
 		}
 	}
+	item = NULL;
 	// falls Value leer ist, verlasse Prozedur
-	if (value == 0 || wcslen(value) == 0)
+	if (empty)
 		return ;
-	item = new structField;
-	item->key = key;
-	item->value = value;
-	_items.Add(item);
+	int start = 0;
+	for (;;)
+	{
+		int bar = (found > 1) ? all.Find(L'|', start) : -1;
+		structField *field = new structField;
+		field->key = name;
+		field->value = (bar < 0) ? all.Mid(start) : all.Mid(start, bar - start);
+		_items.InsertAt(position++, field);
+		if (bar < 0)
+			break;
+		start = bar + 1;
+	}
 }
 
 CAtlString CVorbisComment::GetAllKeys()

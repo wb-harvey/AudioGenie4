@@ -132,6 +132,7 @@ CID3F_RVAD::CID3F_RVAD(long oldID)
 {
 	init(EMPTY);
 	_oldID = oldID;	
+	_fromFile = true;
 }
 
 CID3F_RVAD::CID3F_RVAD(LPCWSTR identification) 	
@@ -147,6 +148,7 @@ void CID3F_RVAD::init(LPCWSTR identification)
 	isDecoded = true;
 	_oldID = F_RVA2;
 	lastTag = 99;
+	_fromFile = false;
 }
 
 CID3F_RVAD::~CID3F_RVAD(void)
@@ -211,6 +213,16 @@ void CID3F_RVAD::encode()
 		mustRebuild = false;
 		lastTag = CTools::ID3V2newTagVersion;
 	}
+}
+
+// 4.0.4.7: RVA2 (v2.4) and RVAD (v2.2/v2.3) hold their channels in different formats. A frame read from the file is
+// not saved into a tag of the other format; it was written with its bytes under the other ID, garbage for every
+// reader (4.0.4.6 and earlier).
+u32 CID3F_RVAD::getStoreID()
+{
+	if (_fromFile && ((_oldID == F_RVA2) != (CTools::ID3V2newTagVersion == TAG_VERSION_2_4)))
+		return F_NONE;
+	return CID3_Frame::getStoreID();
 }
 
 CAtlString CID3F_RVAD::getIdentification()

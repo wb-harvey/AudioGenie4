@@ -86,7 +86,8 @@ unsigned int CID3_FrameFactory::findFrameClassType(unsigned int oldID)
 	if(pPair)
 		return (pPair->m_value);
 	// Nicht gefunden, vielleicht ein unbekannter Textframe (T...)
-	if ( ((oldID << 24 ) & 0xFF) == 'T')
+	// 4.0.4.7: the first character of a 4-character ID; (oldID << 24) & 0xFF was always 0 (4.0.4.6 and earlier)
+	if ( ((oldID >> 24 ) & 0xFF) == 'T')
 		return ID3_T000;
 
 	// nicht gefunden
@@ -105,6 +106,13 @@ u32 CID3_FrameFactory::findTagForVersion(u32 uniqueID)
 		if (ID3_FRAMECODES[row][0] == uniqueID)
 			return ID3_FRAMECODES[row][CTools::ID3V2newTagVersion];		
 	}
+	// 4.0.4.7: a frame AudioGenie doesn't know (GRP1, MVNM, MVIN, PCST, TKWD, ...) is kept with its own ID when the
+	// new tag uses IDs of the same length (4 characters in v2.3/v2.4, 3 in v2.2). It was dropped on every save
+	// (4.0.4.6 and earlier).
+	if (CTools::ID3V2newTagVersion >= TAG_VERSION_2_3 && ((uniqueID >> 24) & 0xFF) != 0)
+		return uniqueID;
+	if (CTools::ID3V2newTagVersion == TAG_VERSION_2_2 && ((uniqueID >> 24) & 0xFF) == 0 && ((uniqueID >> 16) & 0xFF) != 0)
+		return uniqueID;
 	return F_NONE;
 }
 
@@ -140,7 +148,12 @@ CID3_Frame* CID3_FrameFactory::createFrame(unsigned int oldID)
 	case ID3_SIGN: return new CID3F_SIGN();
 	case ID3_SYLT: return new CID3F_SYLT();
 	case ID3_SYTC: return new CID3F_SYTC();
-	case ID3_T000: return new CID3F_T000(findUniqueFrameID(oldID));
+	case ID3_T000: 
+		{
+			// 4.0.4.7: an unknown text frame keeps its own ID
+			u32 uniqueID = findUniqueFrameID(oldID);
+			return new CID3F_T000((uniqueID != ID3_NONE) ? uniqueID : oldID);
+		}
 	case ID3_TXXX: return new CID3F_TXXX();
 	case ID3_UFID: return new CID3F_UFID();
 	case ID3_USER: return new CID3F_USER();

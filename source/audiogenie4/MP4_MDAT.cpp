@@ -28,7 +28,9 @@ CMP4_MDAT::CMP4_MDAT(void)
 {
 	setFrameID(MP4_MDAT);
 	_size = 0;
+	_position = 0;
 	_sameFile = false;
+	_failed = false;
 }
 
 CMP4_MDAT::~CMP4_MDAT(void)
@@ -60,40 +62,62 @@ void CMP4_MDAT::save(FILE *Destination)
 {
 	// Falls Quellpos und Zielpos identisch sind und gleiche Datei ist, dann mache nix
 	// in case source and target pos are indentical and the same file, do nothing.
+	_failed = false;
 	long newPos = ftell(Destination);
+	if (newPos < 0)
+	{
+		_failed = true;
+		return;
+	}
 	if (newPos == (long)_position && _sameFile)
 	{
 		// Positioniere an das Ende des Blocks
 		// set cursor to the end of block
-		fseek(Destination, _position + _size, SEEK_SET);	
+		if (fseek(Destination, _position + _size, SEEK_SET) != 0)
+			_failed = true;
 		return;
 	}
 	// Unterschiedliche Positionen, also kopiere von alt nach neu
 	// different positions, therefore copy old to new
+	// Every read and write is checked, and the source is closed: a short read or write ended the copy as if it
+	// were complete, a source that didn't open wrote nothing, and the caller still saved (4.0.4.6 and earlier)
 	long frameSize = _size;
 	long blockSize = CTools::configValues[CONFIG_ID3V2WRITEBLOCKSIZE];
-	if (!_sourcefile.IsEmpty())
+	if (blockSize <= 0)
+		blockSize = 65536;
+	if (_sourcefile.IsEmpty())
 	{
-		CBlob tmp(blockSize);	
-		FILE *Source;
-		/* Copy data blocks */
-		if ( (Source = _wfsopen(_sourcefile, READ_ONLY, _SH_DENYNO)) != NULL)
+		_failed = true;
+		return;
+	}
+	CBlob tmp(blockSize);
+	FILE *Source;
+	/* Copy data blocks */
+	if ( (Source = _wfsopen(_sourcefile, READ_ONLY, _SH_DENYNO)) != NULL)
+	{
+		if (fseek(Source, _position, SEEK_SET) != 0)
+			_failed = true;
+		long tmpSize = 0;
+		while (!_failed && frameSize > 0)
 		{
-			fseek(Source, _position, SEEK_SET);
-			long tmpSize = 0;
-			while (frameSize > 0)
+			tmpSize = (frameSize > blockSize) ? blockSize : frameSize;
+			ATLTRACE(_T("write %i bytes\n"), tmpSize);
+			tmp.FileRead(tmpSize, Source);
+			CTools::instance().doEvents();
+			if ((long)tmp.GetLength() != tmpSize || (long)tmp.FileWrite(tmpSize, Destination) != tmpSize)
 			{
-				tmpSize = (frameSize > blockSize) ? blockSize : frameSize;
-				ATLTRACE(_T("write %i bytes\n"), tmpSize);
-				tmp.FileRead(tmpSize, Source);
-				CTools::instance().doEvents();
-				tmp.FileWrite(tmpSize, Destination);
-				CTools::instance().doEvents();
-				frameSize-=tmpSize;
+				_failed = true;
+				break;
 			}
-			_position = newPos;
-		} 
-		else
-			CTools::instance().setLastError(errno);
-	}	
+			CTools::instance().doEvents();
+			frameSize-=tmpSize;
+		}
+		fclose(Source);
+		_position = newPos;
+	}
+	else
+	{
+		CTools::instance().setLastError(errno);
+		_failed = true;
+	}
 }

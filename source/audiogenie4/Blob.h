@@ -44,6 +44,9 @@ static const int TEXT_ENCODED_ANSI = 0;     // ISO-8859-1 bzw. ANSI
 static const int TEXT_ENCODED_UTF16BOM = 1; // UTF-16 with BOM
 static const int TEXT_ENCODED_UTF16 = 2;    // UTF-16 without BOM
 static const int TEXT_ENCODED_UTF8 = 3;     // UTF-8
+// 4.0.4.7: internal only, never written as an encoding byte: id3v2.4 $02 is UTF-16 big endian without BOM.
+// TEXT_ENCODED_UTF16 stays little endian (WMA and the SYLT sync texts use it that way).
+static const int TEXT_ENCODED_UTF16BE = 4;
 static const bool TEXT_WITH_ENCODING = true;
 static const bool TEXT_WITHOUT_ENCODING = false;
 static const bool TEXT_WITH_NULLBYTES = true;

@@ -44,6 +44,11 @@ public:
 	bool isDecoded;
 	bool mustRebuild;
 	bool useTextEncoding;
+	bool isResynced; // the blob holds no unsynchronisation (resynced, or not read from a file)
+	bool isRaw;      // compressed or encrypted frame, kept as read
+	// the Blob code for encodingID: id3v2.4 $02 is UTF-16 big endian
+	BYTE textCode() { return (encodingID == TEXT_ENCODED_UTF16) ? (BYTE)TEXT_ENCODED_UTF16BE : encodingID; };
+	virtual u32 getStoreID();
 	long getData(BYTE *destination, long maxLen);
 	bool setData(BYTE *source, unsigned int maxLen);
 	void storeFrame(CBlob *tmp);

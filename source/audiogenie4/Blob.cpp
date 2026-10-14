@@ -402,7 +402,7 @@ static UINT ansiCodePage(const BYTE* s)
 
 CAtlString CBlob::getNextString(BYTE encoding, int& startPos)
 {
-	ATLASSERT(encoding >= 0 && encoding <= 3);
+	ATLASSERT(encoding >= 0 && encoding <= 4);
 	if (m_CurrentLength == 0 || (size_t)startPos > m_CurrentLength)
 		return EMPTY;
 	m_pData[m_CurrentLength] = 0;
@@ -410,7 +410,7 @@ CAtlString CBlob::getNextString(BYTE encoding, int& startPos)
 
 	// find next nullbyte
 	size_t endPos = startPos;
-	if (encoding == TEXT_ENCODED_UTF16BOM || encoding == TEXT_ENCODED_UTF16)
+	if (encoding == TEXT_ENCODED_UTF16BOM || encoding == TEXT_ENCODED_UTF16 || encoding == TEXT_ENCODED_UTF16BE)
 	{
 		while (endPos < m_CurrentLength && (m_pData[endPos] + m_pData[endPos + 1] != 0) ) 
 			endPos+=2;
@@ -433,9 +433,12 @@ CAtlString CBlob::getNextString(BYTE encoding, int& startPos)
 	size_t size = endPos - startPos;
 	size_t maxBuffer = (size_t)CTools::instance().configValues[CONFIG_MAXTEXTBUFFER];
 	CAtlString result;
-	int i, j = 0;
+	size_t i, j = 0;
 	wchar_t *po = CTools::instance().wcTextPuffer;
 	memset(po, 0, min(size * 2 + 32, maxBuffer));
+	// 4.0.4.7: the UTF-16 copies are capped at the buffer (maxBuffer + 2 characters). A longer text (> 256 K characters)
+	// was copied past its end, a heap overflow (4.0.4.6 and earlier).
+	size_t maxBytes = maxBuffer * 2;
 	switch (encoding) // Encoding ID
 	{
 	case TEXT_ENCODED_ANSI: // ANSI bzw ISO-8859-1
@@ -452,12 +455,14 @@ CAtlString CBlob::getNextString(BYTE encoding, int& startPos)
 		{
 			// To the end of this string (it stopped at its length from the start of the buffer, which cut the last
 			// characters of a string that doesn't start at 0)
-			for (i = startPos + 2; i + 1 < (int)endPos; i+=2)
-				po[j++] = ((m_pData[i] << 8) + m_pData[i + 1]); 
+			for (i = startPos + 2; i + 1 < endPos && j < maxBuffer; i+=2)
+				po[j++] = ((m_pData[i] << 8) + m_pData[i + 1]);
+			po[j] = 0;
 		}
-		else if (m_pData[startPos] == 0xFF && m_pData[startPos + 1] == 0xFE ) // little endian
+		else if (size >= 2 && m_pData[startPos] == 0xFF && m_pData[startPos + 1] == 0xFE ) // little endian
 		{
-			memcpy(po, m_pData + startPos + 2, size - 2); // the text after the BOM   
+			memcpy(po, m_pData + startPos + 2, min(size - 2, maxBytes) & ~(size_t)1); // the text after the BOM
+			po[min(size - 2, maxBytes) / 2] = 0;
 		}
 		else // unknown BOM or corrupt
 		{
@@ -465,9 +470,16 @@ CAtlString CBlob::getNextString(BYTE encoding, int& startPos)
 			break;
 		}
 		result = CAtlString(po);
-		break;    
-	case TEXT_ENCODED_UTF16: // UTF-16 without BOM
-		memcpy(po, m_pData + startPos, size);   
+		break;
+	case TEXT_ENCODED_UTF16: // UTF-16 without BOM (little endian)
+		memcpy(po, m_pData + startPos, min(size, maxBytes) & ~(size_t)1);
+		po[min(size, maxBytes) / 2] = 0;
+		result = CAtlString(po);
+		break;
+	case TEXT_ENCODED_UTF16BE: // 4.0.4.7: id3v2.4 $02, UTF-16 big endian without BOM; was read as little endian (4.0.4.6 and earlier)
+		for (i = startPos; i + 1 < endPos && j < maxBuffer; i+=2)
+			po[j++] = ((m_pData[i] << 8) + m_pData[i + 1]);
+		po[j] = 0;
 		result = CAtlString(po);
 		break;
 	case TEXT_ENCODED_UTF8:   // UTF-8 
@@ -511,13 +523,20 @@ fügt einen String je nach Kodierung hinzu
 void CBlob::AddEncodedString(BYTE encoding, const CAtlString source, bool withEncodingByte, bool withNullBytes)
 {
 	if (withEncodingByte)
-		AddValue(encoding);
+		AddValue((BYTE)(encoding == TEXT_ENCODED_UTF16BE ? TEXT_ENCODED_UTF16 : encoding));
 	// Falls String leer ist, dann führe keine Konvertierung durch
 	if (source.GetLength() == 0)
 	{
+		// 4.0.4.7: an empty UTF-16 string with BOM gets its BOM too. A text frame was written as the encoding byte $01
+		// alone, which readers reject ("input too short") (4.0.4.6 and earlier).
+		if (encoding == TEXT_ENCODED_UTF16BOM)
+		{
+			AddValue(0xFF);
+			AddValue(0xFE);
+		}
 		if (withNullBytes)
 		{
-			if (encoding == TEXT_ENCODED_UTF16BOM || encoding == TEXT_ENCODED_UTF16)
+			if (encoding == TEXT_ENCODED_UTF16BOM || encoding == TEXT_ENCODED_UTF16 || encoding == TEXT_ENCODED_UTF16BE)
 				AddValue(0, 2);
 			else
 				AddNullByte();
@@ -548,10 +567,24 @@ void CBlob::AddEncodedString(BYTE encoding, const CAtlString source, bool withEn
 		if (withNullBytes)
 			AddValue(0, 2);		
 		break;
-	case TEXT_ENCODED_UTF16: // UTF-16 without BOM
-		ConcatInPlace(wcslen(source) * 2, source);	
+	case TEXT_ENCODED_UTF16: // UTF-16 without BOM (little endian)
+		ConcatInPlace(wcslen(source) * 2, source);
 		if (withNullBytes)
 			AddValue(0, 2);
+		break;
+	case TEXT_ENCODED_UTF16BE: // 4.0.4.7: id3v2.4 $02, big endian; was written little endian (4.0.4.6 and earlier)
+		{
+			size_t start = m_CurrentLength;
+			ConcatInPlace(wcslen(source) * 2, source);
+			for (size_t k = start; k + 1 < m_CurrentLength; k+=2)
+			{
+				BYTE b = m_pData[k];
+				m_pData[k] = m_pData[k + 1];
+				m_pData[k + 1] = b;
+			}
+			if (withNullBytes)
+				AddValue(0, 2);
+		}
 		break;
 	case TEXT_ENCODED_UTF8:   // UTF-8 
 		Size = WideCharToMultiByte(CP_UTF8,0, source, source.GetLength(), buf, maxBuffer, 0, 0);

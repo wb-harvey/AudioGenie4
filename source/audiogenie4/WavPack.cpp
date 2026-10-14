@@ -39,7 +39,7 @@ void CWavPack::ResetData()
 	_samples = 0;
 	_majorversion = 0;
 	_minorversion = 0;
-	_flags;	
+	_flags = 0;	
 }
 
 /* -------------------------------------------------------------------------- */
@@ -88,12 +88,19 @@ float CWavPack::GetDuration()
 	if (!IsValid())
 		return 0.0f;
 	long sampleRate = GetSampleRate();
-	return sampleRate > 0 ? (float)(_samples / sampleRate ) : 0.0f;
+	// in float (an integer division cut the fraction of a second), and total_samples -1 is an unknown length
+	if (sampleRate <= 0 || (unsigned long)_samples == 0xFFFFFFFFul)
+		return 0.0f;
+	return (float)((double)(unsigned long)_samples / sampleRate);
 }
 
 long CWavPack::GetSampleRate()
 {
-	return (_flags > 0) ? sample_rates[(_flags & (0xfL << 23)) >> 23] : 0;
+	// index 15 is a custom rate, not in the table (it read past its end, 4.0.4.6 and earlier)
+	unsigned long index = ((unsigned long)_flags >> 23) & 0xF;
+	if (_flags == 0 || index >= sizeof(sample_rates) / sizeof(sample_rates[0]))
+		return 0;
+	return (long)sample_rates[index];
 }
 
 long CWavPack::GetChannels()
@@ -108,7 +115,7 @@ bool CWavPack::ReadFromFile(FILE *Stream)
 	/* Read header data */
 	fseek(Stream, CTools::ID3v2Size, SEEK_SET);
 	_header.FileRead(32, Stream);
-	if (_header.GetAt(0) == 'w' && _header.GetAt(1) == 'v' && _header.GetAt(2) == 'p' && _header.GetAt(3) == 'k')
+	if (_header.GetLength() == 32 && _header.GetAt(0) == 'w' && _header.GetAt(1) == 'v' && _header.GetAt(2) == 'p' && _header.GetAt(3) == 'k')
 	{
 		/*
 		0 char ckID [4];              // "wvpk"

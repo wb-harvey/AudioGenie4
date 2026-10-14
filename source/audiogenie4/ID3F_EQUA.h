@@ -35,9 +35,11 @@ public:
 	BYTE getFormat();
 	CAtlString getIdentification();
 	BYTE getAdjustmentBits();
+	u32 getStoreID();
 private:
 	BYTE _format, _bits;
 	CAtlString _identification;
 	long _oldID;
+	bool _fromFile; // its data is in the format of its frame ID in the file (_oldID)
 	BYTE lastTag;
 };

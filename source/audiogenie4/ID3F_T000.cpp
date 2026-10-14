@@ -75,7 +75,7 @@ void CID3F_T000::decode()
 			if (_blob.GetLength() > 1)
 			{
 				int start = 1;
-				_text = _blob.getNextString(encodingID, start);
+				_text = _blob.getNextString(textCode(), start);
 			}
 		}
 		isDecoded = true;
@@ -88,7 +88,7 @@ void CID3F_T000::encode()
 	{
 		decode();
 		_blob.Clear();
-		_blob.AddEncodedString(encodingID, _text, TEXT_WITH_ENCODING, TEXT_WITHOUT_NULLBYTES);
+		_blob.AddEncodedString(textCode(), _text, TEXT_WITH_ENCODING, TEXT_WITHOUT_NULLBYTES);
 		mustRebuild = false;
 	}
 }

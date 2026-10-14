@@ -52,11 +52,16 @@ short CID3V2::getEncoding(u32 FrameID)
 
 bool CID3V2::setTargetFormatAndEncoding(BYTE newFormat, BYTE newEncoding)
 {
-	ATLASSERT(newEncoding >= 0 && newEncoding <= 3);
-	ATLASSERT(newFormat >= 0 && newFormat <= 3);
+	// 4.0.4.7: out of range values are refused. Format 4 made version 5, read past the frame table and wrote a tag no
+	// reader accepts; UTF-16BE (2) was allowed for v2.2/v2.3, which don't have it (4.0.4.6 and earlier).
+	if (newFormat > 3 || newEncoding > 3)
+	{
+		CTools::instance().setLastError(ERR_ID_OUT_OF_RANGE);
+		return false;
+	}
 	if (newFormat > 0)
 		newFormat++;
-	if (newFormat != TAG_VERSION_2_4 && newEncoding == 3)
+	if (newFormat != TAG_VERSION_2_4 && (newEncoding == TEXT_ENCODED_UTF8 || newEncoding == TEXT_ENCODED_UTF16))
 	{
 		CTools::instance().setLastError(ERR_UTF8_NOT_ALLOWED); 
 		return false;
@@ -109,8 +114,10 @@ bool CID3V2::ReadHeader(FILE *Stream)
 		Revision = buf[4];
 		CTools::ID3V2Flags = buf[5];
 		Size = (buf[6] << 21) + ( buf[7] << 14) + (buf[8] << 7) + buf[9] + 10;
-		if ( (CTools::ID3V2Flags & 0x40) == 0x40)
-			Size+= 10; // Extended Header present
+		// 4.0.4.7: the size already includes an extended header (parseTags skips it); a v2.4 footer is not included.
+		// 10 bytes were added for an extended header, and the footer was left in front of the audio (4.0.4.6 and earlier).
+		if (buf[3] == TAG_VERSION_2_4 && (CTools::ID3V2Flags & 0x10) == 0x10)
+			Size+= 10; // Footer present
 		if (Size > CTools::FileSize)
 		{
 			CTools::instance().writeError(L"ID3V2 tag is corrupt, because the ID3V2 size is bigger than filesize!");
@@ -171,7 +178,25 @@ void CID3V2::ReadFromFile(FILE *Stream)
 		CTools::ID3V2oldTagVersion = Version;
 		CBlob data(Size);
 		data.FileRead(Size - 10, Stream);
-		parseTags(&data);		
+		if (Version < TAG_VERSION_2_4 && (CTools::ID3V2Flags & 0x80) == 0x80 && data.GetLength() > 0)
+		{
+			// 4.0.4.7: v2.2/v2.3 unsynchronisation covers the whole tag, and the frame sizes count the resynced bytes.
+			// Each frame was cut at its size from the unsynchronised data, then resynced: every FF 00 before its end
+			// lost a byte of the frame (4.0.4.6 and earlier).
+			CBlob resynced(data.GetLength());
+			const BYTE *p = data.m_pData;
+			size_t n = data.GetLength();
+			for (size_t i = 0; i < n; i++)
+			{
+				resynced.AddValue(p[i]);
+				if (p[i] == 0xFF && i + 1 < n && p[i + 1] == 0x00)
+					i++;
+			}
+			CTools::ID3V2Flags &= ~0x80; // the frames are resynced already
+			parseTags(&resynced);
+		}
+		else
+			parseTags(&data);		
 	}
 	else
 		CTools::instance().writeDebug(_T("no id3v2 tag present"));
@@ -182,6 +207,18 @@ void CID3V2::parseTags(CBlob* data)
 	u32 DataPosition = 0;
 	int headerSize = ( Version == TAG_VERSION_2_2) ? 6 : 10;
 	u32 dataSize = (u32)data->GetLength();
+	// 4.0.4.7: the frames start after the extended header and end before a v2.4 footer. The extended header was
+	// parsed as frames (4.0.4.6 and earlier).
+	if (Version == TAG_VERSION_2_4 && (CTools::ID3V2Flags & 0x10) == 0x10)
+		dataSize = (dataSize > 10) ? dataSize - 10 : 0;
+	if (Version >= TAG_VERSION_2_3 && (CTools::ID3V2Flags & 0x40) == 0x40 && dataSize >= 4)
+	{
+		// v2.3: size without its own 4 bytes; v2.4: syncsafe size of the whole extended header
+		u32 extSize = (Version == TAG_VERSION_2_3) ? (u32)data->Get4B(0) : (u32)data->GetS4B(0);
+		if (Version == TAG_VERSION_2_3 && extSize < dataSize)
+			extSize+= 4;
+		DataPosition = (extSize > dataSize) ? dataSize : extSize;
+	}
 	while ((DataPosition + headerSize) < dataSize)
 	{
 		ATLTRACE(_T("Reading at Pos:%d \n"), DataPosition);
@@ -215,7 +252,9 @@ void CID3V2::parseTags(CBlob* data)
 		else
 		{
 			ATLTRACE(_T("Size:%i "), FrameSize);
-			if (DataPosition + headerSize + FrameSize > dataSize)
+			// 4.0.4.7: compared without adding, a v2.3 size of FFFFFFFF wrapped the sum and the frame was read past the
+			// tag (4.0.4.6 and earlier)
+			if (FrameSize > dataSize - DataPosition - headerSize)
 			{
 				
 				CTools::instance().setLastError(ERR_FRAME_CORRUPT, BYTE(FrameID >> 24), BYTE(FrameID >> 16), BYTE(FrameID >> 8), BYTE(FrameID), DataPosition + headerSize);
@@ -227,6 +266,7 @@ void CID3V2::parseTags(CBlob* data)
 					FrameSize = oldTagSize;
 				CID3_Frame *frame = CID3_FrameFactory::instance().createFrame(FrameID);
 				frame->flags = FrameFlags;
+				frame->isResynced = (Version < TAG_VERSION_2_4); // 4.0.4.7: v2.2/v2.3 unsync was undone for the whole tag above
 				frame->load(data->m_pData + DataPosition + headerSize, FrameSize);
 #ifdef DEBUG
 				frame->print();
@@ -407,26 +447,47 @@ CAtlString CID3V2::GetText(u32 ID)
 {
 	if (_frames.GetCount() == 0)
 		return EMPTY;
-	CID3_Frame *f = findFrame(ID);
-	return (f != NULL ) ? cT000(f)->getText() : EMPTY;
+	// 4.0.4.7: only a text frame has a text. Any frame was cast to one, so the ID of e.g. PCNT, APIC or TXXX read
+	// garbage or crashed (4.0.4.6 and earlier).
+	CID3F_T000 *f = dynamic_cast<CID3F_T000*>(findFrame(ID));
+	return (f != NULL ) ? f->getText() : EMPTY;
 }
 
 CAtlString CID3V2::GetURL(u32 ID)
 {
 	if (_frames.GetCount() == 0)
 		return EMPTY;
-	CID3_Frame *f = findFrame(ID);
-	return (f != NULL ) ? cW000(f)->getURL() : EMPTY;
+	CID3F_W000 *f = dynamic_cast<CID3F_W000*>(findFrame(ID));
+	return (f != NULL ) ? f->getURL() : EMPTY;
 }
 
+// 4.0.4.7: an empty text deletes the frame. AUDIOSaveChangesW sets every field, so a file without e.g. an album got an
+// empty TALB, and an empty UTF-16 frame was written without BOM, which readers reject (4.0.4.6 and earlier).
+// An ID that isn't a text frame is refused: e.g. APIC was replaced by a text frame.
 void CID3V2::SetText(u32 ID, LPCWSTR newText)
 {
-	replaceFrame(new CID3F_T000(ID, newText));	
+	if (CID3_FrameFactory::instance().findFrameClassType(ID) != ID3_T000)
+	{
+		CTools::instance().setLastError(ERR_INVALID_FORMAT);
+		return;
+	}
+	if (newText == NULL || wcslen(newText) == 0)
+		deleteAllFrames(ID);
+	else
+		replaceFrame(new CID3F_T000(ID, newText));
 }
 
 void CID3V2::SetURL(u32 ID, LPCWSTR newURL)
 {
-	replaceFrame(new CID3F_W000(ID, newURL));
+	if (CID3_FrameFactory::instance().findFrameClassType(ID) != ID3_W000)
+	{
+		CTools::instance().setLastError(ERR_INVALID_FORMAT);
+		return;
+	}
+	if (newURL == NULL || wcslen(newURL) == 0)
+		deleteAllFrames(ID);
+	else
+		replaceFrame(new CID3F_W000(ID, newURL));
 }
 
 CAtlString CID3V2::getAllFrameIDs()
@@ -522,8 +583,9 @@ short CID3V2::deleteAllFrames(CAtlString ID)
 	{
 		if (_frames[count]->equals(F_CTOC) || _frames[count]->equals(F_CHAP))
 		{		
-			CID3F_Chapter* result = cCHAPTER(_frames[count]);
-			if (result->getID().Compare(ID) == 0)
+			// 4.0.4.7: was named result too, hiding the counter, so 0 was always returned (4.0.4.6 and earlier)
+			CID3F_Chapter* chapter = cCHAPTER(_frames[count]);
+			if (chapter->getID().Compare(ID) == 0)
 			{
 				delete _frames[count];
 				_frames.RemoveAt(count);
@@ -600,7 +662,7 @@ u32 CID3V2::calcTagSize()
 	for (size_t i = 0; i < count; i++)
 	{
 		frame = _frames[i];
-		id = CID3_FrameFactory::instance().findTagForVersion(frame->_frameID);
+		id = frame->getStoreID(); // 4.0.4.7: the same test as storeFrame
 		if (id != F_NONE)
 			TagSize+= frame->getSize() + wide;		
 	}
@@ -616,13 +678,38 @@ CAtlString CID3V2::GetGenre()
 	char Buffer[4];
 	memset(Buffer, 0, 4);
 	int endPos = genre.Find(')', 1);
+	// 4.0.4.7: only a number of 1-3 digits is a genre index. "(RX)", "(CR)" and "(Live)" read as 0, "Blues" (4.0.4.6 and earlier).
+	if (endPos < 2 || endPos > 4)
+		return genre;
 	for (int i = 1; i < endPos && i < 4; i++)
+	{
+		if (genre.GetAt(i) < '0' || genre.GetAt(i) > '9')
+			return genre;
 		Buffer[i - 1] = (char)genre.GetAt(i);
+	}
 	int zahl = atoi(Buffer);
 	if (zahl >= 0 && zahl < MAX_MUSIC_GENRES)
 		genre = MUSIC_GENRE[zahl];
 	return genre;
 }
+// 4.0.4.7: a token of the cue file in its code page (UTF-8 or the PC's ANSI code page)
+static CAtlString cueToken(CBlob& data, size_t pos, size_t len, UINT codePage)
+{
+	if (len == 0 || pos + len > data.GetLength())
+		return EMPTY;
+	int n = MultiByteToWideChar(codePage, 0, (const char*)(data.m_pData + pos), (int)len, NULL, 0);
+	if (n <= 0)
+		return EMPTY;
+	CAtlString result;
+	MultiByteToWideChar(codePage, 0, (const char*)(data.m_pData + pos), (int)len, result.GetBuffer(n), n);
+	result.ReleaseBuffer(n);
+	return result;
+}
+
+// 4.0.4.7: an exception (a short INDEX line made tokens.GetAt(2) throw) no longer leaves the DLL, which ended the
+// calling .NET program; frame times are 1/75 s (was divided by 76); a UTF-8 cue file is read as UTF-8 (was read in
+// the PC's code page); a TRACK number given twice no longer leaves lastChap pointing to the deleted chapter
+// (4.0.4.6 and earlier)
 bool CID3V2::parseCueFile(LPCWSTR FileName)
 {
 	FILE *Source;
@@ -633,94 +720,126 @@ bool CID3V2::parseCueFile(LPCWSTR FileName)
 		return false;
 	}
 	// Alles in Blob einlesen
-	int ln = _filelength(_fileno(Source));
-	CBlob dummy(ln + 1);
-	dummy.FileRead(ln, Source);
-	fclose(Source);
-	// Blob aufteilen in Stücke, Trenner sind 0D, 0A, EOL und Leerzeichen
-	int pos = 0, start = 0;
-	CAtlArray<CAtlString> tokens;
-	dummy.AddValue(13);
-	CID3F_CTOC *toc = new CID3F_CTOC(_T("toc1"), EMPTY, EMPTY, true);
-	CID3F_CHAP *chap = NULL, *lastChap = NULL;
-	long lastTime = 0;
-	toc->setRoot(true);
-	replaceFrame(toc);
-	while (pos < ln)
+	__int64 fileLength = _filelengthi64(_fileno(Source));
+	if (fileLength < 0 || fileLength > 16 * 1024 * 1024) // a cue sheet is a small text file
 	{
-		if (dummy.GetAt(pos) == '"') // Anführungszeichen
+		fclose(Source);
+		CTools::instance().setLastError(ERR_INVALID_FORMAT);
+		return false;
+	}
+	try
+	{
+		CBlob dummy((size_t)fileLength + 1);
+		dummy.FileRead((size_t)fileLength, Source);
+		fclose(Source);
+		Source = NULL;
+		int ln = (int)dummy.GetLength();
+		// UTF-8 (with or without BOM) when the bytes are valid UTF-8, otherwise the PC's code page
+		int pos = 0, start = 0;
+		if (ln >= 3 && dummy.GetAt(0) == 0xEF && dummy.GetAt(1) == 0xBB && dummy.GetAt(2) == 0xBF)
+			pos = start = 3;
+		UINT codePage = CP_ACP;
+		if (ln - pos > 0 && MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, (const char*)(dummy.m_pData + pos), ln - pos, NULL, 0) > 0)
+			codePage = CP_UTF8;
+		// Blob aufteilen in Stuecke, Trenner sind 0D, 0A, EOL und Leerzeichen
+		CAtlArray<CAtlString> tokens;
+		dummy.AddValue(13);
+		CID3F_CTOC *toc = new CID3F_CTOC(_T("toc1"), EMPTY, EMPTY, true);
+		CID3F_CHAP *chap = NULL, *lastChap = NULL;
+		long lastTime = 0;
+		toc->setRoot(true);
+		replaceFrame(toc);
+		while (pos < ln)
 		{
-			do // Lese bis zum nächsten Anführungszeichen oder Ende der Zeile
+			if (dummy.GetAt(pos) == '"') // Anfuehrungszeichen
 			{
-				pos++;
+				do // Lese bis zum naechsten Anfuehrungszeichen oder Ende der Zeile
+				{
+					pos++;
+				}
+				while (!(dummy.GetAt(pos) == '"' || dummy.GetAt(pos) == 13 || dummy.GetAt(pos) == 10));
+				if (pos - start > 0)
+					tokens.Add(cueToken(dummy, start + 1, pos - start - 1, codePage));
+				start = pos + 1;
 			}
-			while (!(dummy.GetAt(pos) == '"' || dummy.GetAt(pos) == 13 || dummy.GetAt(pos) == 10));
-			if (pos - start > 0)
-				tokens.Add(dummy.GetStringAt(start + 1, pos - start - 1));
-			start = pos + 1;
-		}
-		if (dummy.GetAt(pos) == ' ') // blank	
-		{
-			if (pos - start > 0)
-				tokens.Add(dummy.GetStringAt(start, pos - start));
-			start = pos + 1;
-		}
-		else if (dummy.GetAt(pos) == 13 || dummy.GetAt(pos) == 10)
-		{
-			if (pos - start > 0)
-				tokens.Add(dummy.GetStringAt(start, pos - start));
-			start = pos + 1;
-			// Nun habe ich eine Zeile mit allen relevanten Wörtern
-			// Auswerten; falls Fehler kommt false zurück
-			if (tokens.GetCount() > 1)
+			if (dummy.GetAt(pos) == ' ') // blank	
 			{
-				CAtlString key(tokens.GetAt(0));
-				CAtlString tmp;
-				if (key.CompareNoCase(_T("INDEX")) == 0)
+				if (pos - start > 0)
+					tokens.Add(cueToken(dummy, start, pos - start, codePage));
+				start = pos + 1;
+			}
+			else if (dummy.GetAt(pos) == 13 || dummy.GetAt(pos) == 10)
+			{
+				if (pos - start > 0)
+					tokens.Add(cueToken(dummy, start, pos - start, codePage));
+				start = pos + 1;
+				// Nun habe ich eine Zeile mit allen relevanten Woertern
+				// Auswerten; falls Fehler kommt false zurueck
+				if (tokens.GetCount() > 1)
 				{
-					// int nr = _wtoi(tokens.GetAt(1));
-					tmp = tokens.GetAt(2); // Die Zeitangabe erfolgt in Minuten (mm), Sekunden (ss) und Frames (ff), wobei jede Sekunde in 75(!) Frames unterteilt wird.
-					// time parsen
-					int p1, p2;
-					p1 = tmp.Find(':', 0);
-					p2 = tmp.Find(':', p1 + 1);
-					long startTime = 0;
-					if (p1 != -1 && p2 != -1)
-						startTime = ( _wtoi(tmp.Left(p1)) * 60000l) + (_wtoi(tmp.Mid(p1 + 1, p2 - p1 - 1)) * 1000l) + (_wtoi(tmp.Mid(p2 + 1)) * 1000l / 76l);
-					lastTime = startTime;			
-					if (chap != NULL)
-						chap->setTimes(startTime, startTime);
-					if (lastChap != NULL)
-						lastChap->setTimes(lastChap->getStartTime(), lastTime );
-					lastChap = chap;
-				}
-				else if (key.CompareNoCase(_T("PERFORMER")) == 0)
-				{
-					if (chap != NULL)
-						chap->addFrame(new CID3F_T000(F_TPE1, tokens.GetAt(1)));
-					else
-						toc->addFrame(new CID3F_T000(F_TPE1, tokens.GetAt(1)));
-				}
-				else if (key.CompareNoCase(_T("TITLE")) == 0)
-				{
-					if (chap != NULL )
-						chap->setTitle(tokens.GetAt(1));
-					else
-						toc->setTitle(tokens.GetAt(1));
+					CAtlString key(tokens.GetAt(0));
+					CAtlString tmp;
+					if (key.CompareNoCase(_T("INDEX")) == 0)
+					{
+						if (tokens.GetCount() > 2)
+						{
+							// int nr = _wtoi(tokens.GetAt(1));
+							tmp = tokens.GetAt(2); // Die Zeitangabe erfolgt in Minuten (mm), Sekunden (ss) und Frames (ff), wobei jede Sekunde in 75(!) Frames unterteilt wird.
+							// time parsen
+							int p1, p2;
+							p1 = tmp.Find(':', 0);
+							p2 = tmp.Find(':', p1 + 1);
+							long startTime = 0;
+							if (p1 != -1 && p2 != -1)
+								startTime = ( _wtoi(tmp.Left(p1)) * 60000l) + (_wtoi(tmp.Mid(p1 + 1, p2 - p1 - 1)) * 1000l) + (_wtoi(tmp.Mid(p2 + 1)) * 1000l / 75l);
+							lastTime = startTime;			
+							if (chap != NULL)
+								chap->setTimes(startTime, startTime);
+							if (lastChap != NULL && lastChap != chap)
+								lastChap->setTimes(lastChap->getStartTime(), lastTime );
+							lastChap = chap;
+						}
+					}
+					else if (key.CompareNoCase(_T("PERFORMER")) == 0)
+					{
+						if (chap != NULL)
+							chap->addFrame(new CID3F_T000(F_TPE1, tokens.GetAt(1)));
+						else
+							toc->addFrame(new CID3F_T000(F_TPE1, tokens.GetAt(1)));
+					}
+					else if (key.CompareNoCase(_T("TITLE")) == 0)
+					{
+						if (chap != NULL )
+							chap->setTitle(tokens.GetAt(1));
+						else
+							toc->setTitle(tokens.GetAt(1));
 
+					}
+					else if (key.CompareNoCase(_T("TRACK")) == 0)
+					{
+							tmp.Format(_T("ch%i"), _wtoi(tokens.GetAt(1)));
+							// a TRACK number given twice: replaceFrame deletes the earlier chapter
+							CID3_Frame *old = findFrame(tmp);
+							if (old != NULL && old == lastChap)
+								lastChap = NULL;
+							chap = new CID3F_CHAP(tmp, EMPTY, EMPTY);
+							replaceFrame(chap);
+							toc->deleteChildElement(tmp); // listed once
+							toc->addChildElement(tmp);										
+					}				
 				}
-				else if (key.CompareNoCase(_T("TRACK")) == 0)
-				{
-						tmp.Format(_T("ch%i"), _wtoi(tokens.GetAt(1)));
-						chap = new CID3F_CHAP(tmp, EMPTY, EMPTY);
-						replaceFrame(chap);
-						toc->addChildElement(tmp);										
-				}				
+				// Zeile wieder zuruecksetzen
+				tokens.RemoveAll();
 			}
-			// Zeile wieder zurücksetzen
-			tokens.RemoveAll();
+			pos++;
 		}
-		pos++;
+	}
+	catch (...)
+	{
+		if (Source != NULL)
+			fclose(Source);
+		CTools::instance().setLastError(ERR_INVALID_FORMAT);
+		return false;
 	}
 	return true;
 }

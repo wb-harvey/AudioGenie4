@@ -48,42 +48,77 @@ CFlacCover::CFlacCover(void)
 	colordepth = 0;
 	colornumbers = 0;
 	_isLink = false;
+	_valid = true;
 }
+
+// the largest picture a "-->" link reads in while analyzing
+#define FLAC_LINK_MAX_SIZE (64 * 1024 * 1024)
 
 CFlacCover::CFlacCover(CBlob *tmpData)
 {
+	type = 0;
+	width = 0;
+	height = 0;
+	colordepth = 0;
+	colornumbers = 0;
+	_isLink = false;
+	_valid = false;
+	// Every length is checked against the block (they were used unchecked and read past its end, 4.0.4.6 and
+	// earlier); a cover that doesn't fit stays invalid and isn't added. Fixed part: type, MIME length,
+	// description length, 4 values, picture length = 32 bytes.
+	size_t total = tmpData->GetLength();
+	if (total < 32)
+		return;
 	type = tmpData->Get4B(0);
-	size_t ln = tmpData->Get4B(4); // Length
-	int start = 8;
+	size_t ln = (unsigned long)tmpData->Get4B(4); // Length
+	size_t start = 8;
 	int dummy = 0;
+	if (ln > total - start - 24)
+		return;
 	_mime = tmpData->GetStringAt(start, ln); // ASCII Mime
-	start+=(int)ln;
-	ln = tmpData->Get4B(start); // Length
+	start+=ln;
+	ln = (unsigned long)tmpData->Get4B(start); // Length
 	start+=4;
+	if (ln > total - start - 20)
+		return;
 	data.Clear();
 	data.AddMemory(tmpData->m_pData + start, ln);
 	description = data.getNextString(TEXT_ENCODED_UTF8, dummy);
-	start+=(int)ln;
+	start+=ln;
 	width = tmpData->Get4B(start); // width
 	height = tmpData->Get4B(start + 4); // height
 	colordepth = tmpData->Get4B(start + 8); // color depth
 	colornumbers = tmpData->Get4B(start + 12); // numbers of colors
-	ln = tmpData->Get4B(start + 16); //picture length
+	ln = (unsigned long)tmpData->Get4B(start + 16); //picture length
 	data.Clear();
 	start+=20;
+	if (ln > total - start)
+		return;
 	// Falls Mime --> ist , dann Bild aus Datei lesen
 	if (_mime.Compare(_T("-->")) == 0)
 	{
 		_isLink = true;
-		_pictureLink = tmpData->getNextString(TEXT_ENCODED_ANSI, start);
+		CBlob link;
+		link.AddMemory(tmpData->m_pData + start, ln);
+		_pictureLink = link.ConvertToUnicodeString(TEXT_ENCODED_ANSI);
+		// The link comes from the file: a network path (\\server\..., //server/...) isn't opened (opening it sent
+		// the user's Windows credentials to that server), and a file over 64 MB isn't read (4.0.4.6 and earlier)
+		bool network = _pictureLink.GetLength() >= 2 &&
+			(_pictureLink[0] == L'\\' || _pictureLink[0] == L'/') && (_pictureLink[1] == L'\\' || _pictureLink[1] == L'/');
 		FILE *tmpSource;
-		if ( (tmpSource = _wfsopen(_pictureLink, READ_ONLY, _SH_DENYNO)) != NULL)
+		if (!network && _pictureLink.GetLength() > 0 && (tmpSource = _wfsopen(_pictureLink, READ_ONLY, _SH_DENYNO)) != NULL)
 		{
-			data.FileRead(_filelength(_fileno(tmpSource)), tmpSource);
+			__int64 size = _filelengthi64(_fileno(tmpSource));
+			if (size > 0 && size <= FLAC_LINK_MAX_SIZE)
+			{
+				data.FileRead((size_t)size, tmpSource);
+				if ((__int64)data.GetLength() != size)
+					data.Clear();
+			}
 			fclose(tmpSource);
 		}
 		else
-			CTools::instance().setLastError(ERR_IMAGEURL_NOT_FOUND, _pictureLink);
+			CTools::instance().setLastError(ERR_IMAGEURL_NOT_FOUND, (LPCWSTR)_pictureLink);
 
 	}
 	else
@@ -91,6 +126,7 @@ CFlacCover::CFlacCover(CBlob *tmpData)
 		_isLink = false;
 		data.AddMemory(tmpData->m_pData + start, ln);
 	}
+	_valid = true;
 }
 
 CFlacCover::CFlacCover(BYTE picType, LPCWSTR Description)
@@ -101,6 +137,21 @@ CFlacCover::CFlacCover(BYTE picType, LPCWSTR Description)
 	height = 0;
 	colordepth = 0;
 	colornumbers = 0;
+	_isLink = false; // (they were left uninitialized, 4.0.4.6 and earlier)
+	_mime.Empty();
+	_valid = true;
+}
+
+// Sets the picture from memory: the MIME type is taken from the picture, as setPictureFile does
+void CFlacCover::setPictureArray(const BYTE *arr, u32 len)
+{
+	data.Clear();
+	_isLink = false;
+	_pictureLink.Empty();
+	if (arr != NULL && len > 0)
+		data.AddMemory(arr, len);
+	_mime = (len > 4 && arr != NULL) ? CTools::instance().ExtractMimeFromPicture(data.m_pData) : CAtlString();
+	calcInfos();
 }
 
 

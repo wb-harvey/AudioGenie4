@@ -22,6 +22,10 @@
 #include "Blob.h"
 typedef unsigned __int32  u32;
 
+// 4.0.4.7: text for WAV chunks, which have no encoding marker (see WAVChunk.cpp)
+void WAVAddAnsiString(CBlob *blob, const CAtlString &text, bool withNullByte);
+void WAVAddFixedAnsiString(CBlob *blob, const CAtlString &text, size_t maxLen);
+
 class CWAVChunk
 {
 public:

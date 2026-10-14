@@ -40,4 +40,6 @@ public:
 	long getSize();	
 protected:
 	u32 _offset, _size;
+	// a QuickTime-style meta: no version/flags, its hdlr starts right after the header
+	bool _noFullBox;
 };
