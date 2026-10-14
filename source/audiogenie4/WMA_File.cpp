@@ -234,8 +234,20 @@ bool CWMA_File::SaveToFile(LPCWSTR FileName)
 			if (newMetas->getData()->GetLength() == 0)
 			{
 				delete newMetas;
-				newMetas = NULL;				
+				newMetas = NULL;
 			}
+		}
+	}
+	else
+	{
+		// 4.0.4.9: no Header Extension: Metadata Library items (values over 64 KB, ...) get one below; they were
+		// dropped (4.0.4.9 before this)
+		newMetas = new CWMA_MetadataLibrary();
+		newMetas->buildData();
+		if (newMetas->getData()->GetLength() == 0)
+		{
+			delete newMetas;
+			newMetas = NULL;
 		}
 	}
 
@@ -276,8 +288,14 @@ bool CWMA_File::SaveToFile(LPCWSTR FileName)
 		else
 			he->deleteObject(WMA_METADATA_LIBRARY_ID);
 	}
-	else
-		delete newMetas; // (nowhere to put it; it leaked)
+	else if (newMetas != NULL)
+	{
+		// 4.0.4.9: a new Header Extension holds the Metadata Library
+		CWMA_Header_Extension* he = new CWMA_Header_Extension();
+		he->initNew();
+		he->replaceObject(newMetas);
+		header.replaceObject(he);
+	}
 	// Neue Elemente ersetzen
 	if (newContent != NULL)
 		header.replaceObject(newContent);

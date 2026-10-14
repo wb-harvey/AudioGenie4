@@ -587,7 +587,7 @@ CAtlString CWAVFile::getINFOChunkIDs()
 }
 
 // 4.0.4.7: the INFO and DISP text of the analyzed file saved into another WAV file (a copy encoded again from it):
-// the target keeps its own chunks (fmt, bext, cart...) and its audio. The analyzed file's chunks were written over
+// the target keeps its own chunks (fmt, ...) and its audio; bext and cart come from the analyzed file (4.0.4.9). The analyzed file's chunks were written over
 // the target (4.0.4.6 and earlier); 4.0.4.7 refused it. CTools::ID3v2Size must be the target's (GetFormat).
 bool CWAVFile::SaveToOtherFile(LPCWSTR FileName)
 {
@@ -627,6 +627,28 @@ bool CWAVFile::SaveToOtherFile(LPCWSTR FileName)
 	CAtlString display = getDisplayText();
 	if (!display.IsEmpty() || !target.getDisplayText().IsEmpty())
 		target.setDisplayText(display);
+	// 4.0.4.9: the broadcast chunks (bext, cart) are copied whole, their binary fields with their text: only INFO and
+	// DISP were (4.0.4.9 before this). A target that has its own and the analyzed file none keeps its own.
+	CWAVBEXTChunk *bext = mainContainer->getBextChunk();
+	if (bext != NULL && bext->getData()->GetLength() > 0)
+	{
+		CWAVBEXTChunk *to = target.mainContainer->addBextChunk();
+		if (to != NULL)
+		{
+			to->getData()->Clear();
+			to->getData()->AddBlob(*bext->getData());
+		}
+	}
+	CWAVCARTChunk *cart = mainContainer->getCartChunk();
+	if (cart != NULL && cart->getData()->GetLength() > 0)
+	{
+		CWAVCARTChunk *to = target.mainContainer->addCartChunk();
+		if (to != NULL)
+		{
+			to->getData()->Clear();
+			to->getData()->AddBlob(*cart->getData());
+		}
+	}
 	return target.SaveToFile(FileName);
 }
 

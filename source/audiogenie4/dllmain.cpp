@@ -46,6 +46,23 @@ BYTE GetFileFormat(FILE *Stream)
 {
 	// this file's own ID3v2 size: a file without ID3v2 kept the previous file's (4.0.4.6 and earlier)
 	CTools::ID3v2Size = 0;
+	// and its own ID3v1 size: the analyzed file's was used for it, so a save into a file of under 128 bytes figured
+	// a size of about 4 GB, and the 32-bit build threw out of the DLL (4.0.4.9 before this). CKeepAnalyzed puts the
+	// analyzed file's back afterwards.
+	{
+		CTools::ID3v1Size = 0;
+		__int64 len = _filelengthi64(_fileno(Stream));
+		if (len >= 128)
+		{
+			// with the 3 bytes before it: "TAG" inside an APE footer ("APETAGEX") is no ID3v1 tag
+			BYTE buf[131];
+			size_t n = (len >= 131) ? 131 : 128;
+			if (_fseeki64(Stream, len - (__int64)n, SEEK_SET) == 0 && fread(buf, 1, n, Stream) == n &&
+				memcmp(buf + n - 128, "TAG", 3) == 0 && !(n == 131 && memcmp(buf, "APETAGEX", 8) == 0))
+				CTools::ID3v1Size = 128;
+		}
+		_fseeki64(Stream, 0, SEEK_SET);
+	}
 	BYTE result = header.ReadFromFile(Stream);
 	if (result == AUDIO_FORMAT_ID3V2)
 	{
@@ -146,6 +163,37 @@ static bool isLastFile(LPCWSTR FileName)
 {
 	return !lastFile.IsEmpty() && lastFile.CompareNoCase(FileName) == 0;
 }
+
+// 4.0.4.9: an operation on a file other than the analyzed one (a save or remove "ToFile", MPEGSet*W) sets the
+// global sizes to that file's own (GetFormat) and left them so: the analyzed file's duration, bit rate and MD5 range
+// were then figured with the other file's ID3v2/ID3v1 size until it was analyzed again. This keeps them for the
+// analyzed file; it copies the name, which may point into lastFile.
+class CKeepAnalyzed
+{
+public:
+	CKeepAnalyzed(LPCWSTR FileName) : target(getValidPointer(FileName))
+	{
+		fileSize = CTools::FileSize;
+		id3v2Size = CTools::ID3v2Size;
+		id3v1Size = CTools::ID3v1Size;
+		id3v2Flags = CTools::ID3V2Flags;
+	}
+	~CKeepAnalyzed()
+	{
+		if (isLastFile(target))
+			return; // the analyzed file itself: its sizes are the new ones (or it was analyzed again)
+		CTools::FileSize = fileSize;
+		CTools::ID3v2Size = id3v2Size;
+		CTools::ID3v1Size = id3v1Size;
+		CTools::ID3V2Flags = id3v2Flags;
+	}
+private:
+	CAtlString target;
+	long fileSize;
+	long id3v2Size;
+	int id3v1Size;
+	BYTE id3v2Flags;
+};
 
 void ClearAllTags()
 {
@@ -469,6 +517,7 @@ ende:
 */
 extern "C" short __stdcall AUDIOSaveChangesToFileW(LPCWSTR FileName) 
 {
+	CKeepAnalyzed keep(FileName); // the analyzed file's sizes stay its own (4.0.4.9)
 	CTools::instance().setLastError(0);
 	FileName = getValidPointer(FileName);
 	// the target's format in a local: Format is the analyzed file's and was overwritten by a save to another file (4.0.4.6 and earlier)
@@ -1503,6 +1552,7 @@ extern "C" long __stdcall FLACGetPictureArrayW(BYTE *arr, u32 maxLen, short Inde
 */
 extern "C" short __stdcall FLACSaveChangesToFileW(LPCWSTR FileName)
 {
+	CKeepAnalyzed keep(FileName); // the analyzed file's sizes stay its own (4.0.4.9)
 	FileName = getValidPointer(FileName);
 	if (GetFormat(FileName) == AUDIO_FORMAT_FLAC)
 		return b2s(isAnalyzedFormat(AUDIO_FORMAT_FLAC) && (isLastFile(FileName) ? flac.SaveToFile(FileName) : flac.SaveToOtherFile(FileName)));
@@ -1957,6 +2007,7 @@ extern "C" void __stdcall MP4DeleteEntriesW()
 */
 extern "C" short __stdcall MP4SaveChangesToFileW(LPCWSTR FileName)
 {
+	CKeepAnalyzed keep(FileName); // the analyzed file's sizes stay its own (4.0.4.9)
 	FileName = getValidPointer(FileName);
 	if (GetFormat(FileName) != AUDIO_FORMAT_INVALID)
 	{
@@ -2202,6 +2253,7 @@ static bool isMpegFile(LPCWSTR FileName)
 */
 extern "C" short __stdcall MPEGSetCopyrightedW(LPCWSTR FileName, short newValue)
 {
+	CKeepAnalyzed keep(FileName); // the analyzed file's sizes stay its own (4.0.4.9)
 	if (!isMpegFile(getValidPointer(FileName)))
 		return b2s(false);
 	return b2s(mpeg.SetCopyrightBit(getValidPointer(FileName), (newValue != 0) ));
@@ -2223,6 +2275,7 @@ extern "C" short __stdcall MPEGSetCopyrightedW(LPCWSTR FileName, short newValue)
 */
 extern "C" short __stdcall MPEGSetOriginalW(LPCWSTR FileName, short newValue)
 {
+	CKeepAnalyzed keep(FileName); // the analyzed file's sizes stay its own (4.0.4.9)
 	if (!isMpegFile(getValidPointer(FileName)))
 		return b2s(false);
 	return b2s(mpeg.SetOriginalBit(getValidPointer(FileName), (newValue != 0) ));
@@ -2244,6 +2297,7 @@ extern "C" short __stdcall MPEGSetOriginalW(LPCWSTR FileName, short newValue)
 */
 extern "C" short __stdcall MPEGSetPrivateW(LPCWSTR FileName, short newValue)
 {
+	CKeepAnalyzed keep(FileName); // the analyzed file's sizes stay its own (4.0.4.9)
 	if (!isMpegFile(getValidPointer(FileName)))
 		return b2s(false);
 	return b2s(mpeg.SetPrivateBit(getValidPointer(FileName), (newValue != 0) ));
@@ -2851,6 +2905,7 @@ extern "C" void __stdcall OGGSetUserItemW(LPCWSTR ItemKey, LPCWSTR textString)
 */
 extern "C" short __stdcall OGGSaveChangesToFileW(LPCWSTR FileName)
 {
+	CKeepAnalyzed keep(FileName); // the analyzed file's sizes stay its own (4.0.4.9)
 	FileName = getValidPointer(FileName);
 	if (GetFormat(FileName) == AUDIO_FORMAT_OGGVORBIS)
 		return b2s(ogg.SaveTag(FileName));
@@ -2886,6 +2941,7 @@ extern "C" short __stdcall OGGSaveChangesW()
 */
 extern "C" short __stdcall OGGRemoveTagFromFileW(LPCWSTR FileName)
 {
+	CKeepAnalyzed keep(FileName); // the analyzed file's sizes stay its own (4.0.4.9)
 	FileName = getValidPointer(FileName);
 	if (GetFormat(FileName) == AUDIO_FORMAT_OGGVORBIS)
 		return b2s(ogg.RemoveTag(FileName));
@@ -3326,6 +3382,7 @@ extern "C" short __stdcall WMAIsVBRW()
 */
 extern "C" short __stdcall WMASaveChangesToFileW(LPCWSTR FileName) 
 {
+	CKeepAnalyzed keep(FileName); // the analyzed file's sizes stay its own (4.0.4.9)
 	FileName = getValidPointer(FileName);
 	if (GetFormat(FileName) == AUDIO_FORMAT_WMA)
 	{
@@ -3703,6 +3760,7 @@ extern "C" BSTR __stdcall APEGetItemKeysW()
 */
 extern "C" short __stdcall APESaveChangesToFileW(LPCWSTR FileName)
 {
+	CKeepAnalyzed keep(FileName); // the analyzed file's sizes stay its own (4.0.4.9)
 	FileName = getValidPointer(FileName);
 	if (GetFormat(FileName) != AUDIO_FORMAT_INVALID)
 		return b2s(ape.SaveToFile(FileName));
@@ -3737,6 +3795,7 @@ extern "C" short __stdcall APESaveChangesW()
 */
 extern "C" short __stdcall APERemoveTagFromFileW(LPCWSTR FileName)
 {
+	CKeepAnalyzed keep(FileName); // the analyzed file's sizes stay its own (4.0.4.9)
 	FileName = getValidPointer(FileName);
 	if (ape.RemoveFromFile(FileName, true))
 	{
@@ -4076,6 +4135,7 @@ extern "C" BSTR __stdcall ID3V1GetVersionW()
 */
 extern "C" short __stdcall ID3V1RemoveTagFromFileW(LPCWSTR FileName)
 {
+	CKeepAnalyzed keep(FileName); // the analyzed file's sizes stay its own (4.0.4.9)
 	FileName = getValidPointer(FileName);
 	// always: lyrics.Exists() is the analyzed file's, not FileName's, and its Lyrics3 tag was left orphaned before
 	// the ID3v1 tag it belongs to (4.0.4.6 and earlier). RemoveFromFile does nothing without a LYRICSBEGIN.
@@ -4121,6 +4181,7 @@ extern "C" short __stdcall ID3V1RemoveTagW()
 */
 extern "C" short __stdcall ID3V1SaveChangesToFileW(LPCWSTR FileName)
 {
+	CKeepAnalyzed keep(FileName); // the analyzed file's sizes stay its own (4.0.4.9)
 	FileName = getValidPointer(FileName);
 	if (GetFormat(FileName) != AUDIO_FORMAT_INVALID)
 		return b2s(id3v1.SaveToFile(FileName));
@@ -4487,6 +4548,7 @@ extern "C" void __stdcall LYRICSSetTitleW(LPCWSTR textString)
 */
 extern "C" short __stdcall LYRICSRemoveTagFromFileW(LPCWSTR FileName)
 {
+	CKeepAnalyzed keep(FileName); // the analyzed file's sizes stay its own (4.0.4.9)
 	FileName = getValidPointer(FileName);
 	if (lyrics.RemoveFromFile(FileName))
 	{    
@@ -4528,6 +4590,7 @@ extern "C" short __stdcall LYRICSRemoveTagW()
 */
 extern "C" short __stdcall LYRICSSaveChangesToFileW(LPCWSTR FileName)
 {
+	CKeepAnalyzed keep(FileName); // the analyzed file's sizes stay its own (4.0.4.9)
 	FileName = getValidPointer(FileName);
 	if (GetFormat(FileName) != AUDIO_FORMAT_INVALID)
 		return b2s(lyrics.SaveToFile(FileName));
@@ -7967,6 +8030,7 @@ extern "C" BSTR __stdcall ID3V2GetUserURLW(short Index)
 */
 extern "C" short __stdcall ID3V2RemoveTagFromFileW(LPCWSTR FileName)
 {
+	CKeepAnalyzed keep(FileName); // the analyzed file's sizes stay its own (4.0.4.9)
 	if (id3v2.RemoveFromFile(getValidPointer(FileName)))
 	{
 		AUDIOAnalyzeFileW(getValidPointer(FileName));
@@ -8004,6 +8068,7 @@ extern "C" short __stdcall ID3V2RemoveTagW()
 */
 extern "C" short __stdcall ID3V2SaveChangesToFileW(LPCWSTR FileName)
 {
+	CKeepAnalyzed keep(FileName); // the analyzed file's sizes stay its own (4.0.4.9)
 	FileName = getValidPointer(FileName);	
 	if (GetFormat(FileName) != AUDIO_FORMAT_INVALID)
 		return b2s(id3v2.SaveToFile(FileName));
@@ -8305,6 +8370,7 @@ extern "C" void __stdcall WAVSetDisplayTextW(LPCWSTR textString)
 */
 extern "C" short __stdcall WAVSaveChangesToFileW(LPCWSTR FileName)
 {
+	CKeepAnalyzed keep(FileName); // the analyzed file's sizes stay its own (4.0.4.9)
 	FileName = getValidPointer(FileName);	
 	if (GetFormat(FileName) != AUDIO_FORMAT_INVALID)
 	{

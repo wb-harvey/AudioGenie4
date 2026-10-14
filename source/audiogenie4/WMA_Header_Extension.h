@@ -38,6 +38,7 @@ public:
 	void buildData();
 	void replaceObject(CWMA_Object* object);
 	void Remove();
+	void initNew();
 private:
 	CAtlArray<CWMA_Object *> _children;
 	IID reserved1;

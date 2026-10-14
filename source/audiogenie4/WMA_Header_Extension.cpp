@@ -25,7 +25,18 @@
 
 CWMA_Header_Extension::CWMA_Header_Extension(void)
 {
-	_objectID = WMA_HEADER_EXTENSION_ID;	
+	_objectID = WMA_HEADER_EXTENSION_ID;
+	memset(&reserved1, 0, sizeof(reserved1));
+	reserved2 = 0;
+}
+
+// 4.0.4.9: a new Header Extension for a file without one: Reserved Field 1 is ASF_Reserved_1 and Field 2 is 6, as
+// the ASF specification requires
+void CWMA_Header_Extension::initNew()
+{
+	static const IID ASF_RESERVED_1 = { 0xABD3D211, 0xA9BA, 0x11CF, { 0x8E,0xE6,0x00,0xC0,0x0C,0x20,0x53,0x65 } };
+	reserved1 = ASF_RESERVED_1;
+	reserved2 = 6;
 }
 
 CWMA_Header_Extension::~CWMA_Header_Extension(void)

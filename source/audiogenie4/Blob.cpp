@@ -213,8 +213,20 @@ void CBlob::FileRead(size_t nLen, FILE *Stream)
 		m_CurrentLength = 0;
 		return;
 	}
-	AllocNewBuffer(nLen);
-	m_CurrentLength = fread(m_pData, 1, nLen, Stream);
+	// 4.0.4.9: never more than the bytes left in the file (fread can't read more anyway). A size read from a damaged
+	// or foreign file (an atom size of 4 GB) allocated that much: the 32-bit build threw bad_alloc out of the DLL,
+	// which ends the calling app (4.0.4.9 before this).
+	// The buffer stays the size asked for up to 1 MB, as before (some callers look at m_pData before the length).
+	size_t readLen = nLen;
+	__int64 pos = _ftelli64(Stream), len = _filelengthi64(_fileno(Stream));
+	if (pos >= 0 && len >= 0)
+	{
+		unsigned __int64 left = (len > pos) ? (unsigned __int64)(len - pos) : 0;
+		if ((unsigned __int64)readLen > left)
+			readLen = (size_t)left;
+	}
+	AllocNewBuffer((nLen <= 1024 * 1024) ? nLen : readLen);
+	m_CurrentLength = (readLen > 0) ? fread(m_pData, 1, readLen, Stream) : 0;
 }
 
 size_t CBlob::FileWrite(size_t nLen, FILE *Stream)

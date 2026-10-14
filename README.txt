@@ -33,6 +33,16 @@ Version 4.0.4.9
   (error 209). Shorter paths are passed as before.
 - WMA title, author, copyright, description and rating are cut at 32766 characters, the most their 16-bit length
   holds: a longer one wrapped the length around and the fields after it were read from inside it.
+- After a save or remove "ToFile" (or MPEGSet*W) on a file other than the analyzed one, the analyzed file keeps its
+  own ID3v2/ID3v1 sizes: its duration, bit rate and MD5 range were figured with the other file's sizes until it
+  was analyzed again.
+- WAV tags saved into another file (FLACSaveChangesToFileW and WAVSaveChangesToFileW since 4.0.4.7) carry the
+  broadcast chunks (bext, cart) whole too, not only INFO and DISP.
+- WMA Metadata Library items (values over 64 KB) are saved in a file without a Header Extension: one is added.
+  They were dropped.
+- A save "ToFile" into a file other than the analyzed one uses that file's own ID3v1 size, and no read takes more
+  than the bytes left in the file: MP4SaveChangesToFileW into a file of under 128 bytes figured a size of about
+  4 GB from the analyzed file's ID3v1 tag, and the 32-bit build threw out of the DLL (found by the x86 API fuzz).
 Wrappers: SafeStr reads up to the first NUL again (PtrToStringUni) and still frees the string.
 
 Version 4.0.4.8
