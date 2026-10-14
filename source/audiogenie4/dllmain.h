@@ -44,7 +44,7 @@
 #include "TTA.h"
 #include "WavPack.h"
 
-#define b2s(b)				(( b == 0 ) ? (0) : (-1))
+#define b2s(b)				(( (b) == 0 ) ? (0) : (-1)) // (b) in parentheses: b2s(x && y) and b2s(c ? x : y) compared only their last part with 0
 #define getValidPointer(p)     ((p == 0 || wcslen(p) == 0) ? (EMPTY) : (p) )
 
 static CAudio defaultaudio;

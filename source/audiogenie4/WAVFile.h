@@ -80,6 +80,7 @@ public:
 	float GetDuration();
 	bool ReadFromFile(FILE *Stream);
 	bool SaveToFile(LPCWSTR FileName);
+	bool SaveToOtherFile(LPCWSTR FileName);
 	bool IsValid();
 	long GetChannels();
 	long GetSampleRate();

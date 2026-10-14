@@ -586,6 +586,50 @@ CAtlString CWAVFile::getINFOChunkIDs()
 	return result;
 }
 
+// 4.0.4.7: the INFO and DISP text of the analyzed file saved into another WAV file (a copy encoded again from it):
+// the target keeps its own chunks (fmt, bext, cart...) and its audio. The analyzed file's chunks were written over
+// the target (4.0.4.6 and earlier); 4.0.4.7 refused it. CTools::ID3v2Size must be the target's (GetFormat).
+bool CWAVFile::SaveToOtherFile(LPCWSTR FileName)
+{
+	FILE *Stream;
+	errno = 0;
+	if ((Stream = _wfsopen(FileName, READ_ONLY, _SH_DENYNO)) == NULL)
+	{
+		CTools::instance().setLastError(errno);
+		return false;
+	}
+	__int64 fileLen = _filelengthi64(_fileno(Stream));
+	int id3v1Size = CTools::ID3v1Size;
+	CTools::ID3v1Size = WAVHasID3v1(Stream, fileLen) ? 128 : 0; // the target's own, for its chunk walk
+	CWAVFile target;
+	bool ok = target.ReadFromFile(Stream);
+	CTools::ID3v1Size = id3v1Size;
+	fclose(Stream);
+	if (!ok)
+	{
+		CTools::instance().setLastError(ERR_INVALID_FORMAT);
+		return false;
+	}
+	int pos = 0;
+	CAtlString ids = target.getINFOChunkIDs(), id;
+	for (id = ids.Tokenize(_T(","), pos); pos >= 0; id = ids.Tokenize(_T(","), pos))
+		if (id.GetLength() == 4)
+			target.setTextFrame((id[0] << 24) | (id[1] << 16) | (id[2] << 8) | id[3], EMPTY);
+	pos = 0;
+	ids = getINFOChunkIDs();
+	for (id = ids.Tokenize(_T(","), pos); pos >= 0; id = ids.Tokenize(_T(","), pos))
+	{
+		if (id.GetLength() != 4)
+			continue;
+		u32 frameID = (id[0] << 24) | (id[1] << 16) | (id[2] << 8) | id[3];
+		target.setTextFrame(frameID, getTextFrame(frameID));
+	}
+	CAtlString display = getDisplayText();
+	if (!display.IsEmpty() || !target.getDisplayText().IsEmpty())
+		target.setDisplayText(display);
+	return target.SaveToFile(FileName);
+}
+
 bool CWAVFile::SaveToFile(LPCWSTR FileName)
 {
 	// 4.0.4.7: the file is read again here and the audio is copied from its own 'data' chunk; without one (or with a

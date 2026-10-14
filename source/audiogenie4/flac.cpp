@@ -334,6 +334,54 @@ bool CFLAC::SaveToFile(LPCWSTR FileName)
 
 //-------------------------------------------------------------------------
 
+static void SwapBlobs(CBlob &a, CBlob &b)
+{
+	CBlob tmp;
+	tmp.AddBlob(a);
+	a.Clear();
+	a.AddBlob(b);
+	b.Clear();
+	b.AddBlob(tmp);
+}
+
+// 4.0.4.7: the comments and pictures of the analyzed file saved into another FLAC file (a copy encoded again from
+// it): the target keeps its own STREAMINFO, seek table and other blocks, and its audio. The analyzed file's blocks
+// and metadata length were written over the target, over the start of its audio (4.0.4.6 and earlier); 4.0.4.7
+// refused it. CTools::ID3v2Size must be the target's (GetFormat).
+bool CFLAC::SaveToOtherFile(LPCWSTR FileName)
+{
+	FILE *Stream;
+	errno = 0;
+	if ((Stream = _wfsopen(FileName, L"rb", _SH_DENYNO)) == NULL)
+	{
+		CTools::instance().setLastError(errno);
+		return false;
+	}
+	CFLAC target;
+	bool ok = target.ReadFromFile(Stream);
+	fclose(Stream);
+	if (!ok)
+	{
+		CTools::instance().setLastError(ERR_INVALID_FORMAT);
+		return false;
+	}
+	// the target's layout for this save, then this file's again
+	SwapBlobs(BlockStreamInfo, target.BlockStreamInfo);
+	SwapBlobs(BlockOther, target.BlockOther);
+	long len = oldLen, pos = firstAudioPosition;
+	bool damaged = blocksDamaged;
+	oldLen = target.oldLen;
+	firstAudioPosition = target.firstAudioPosition;
+	blocksDamaged = target.blocksDamaged;
+	bool result = SaveToFile(FileName);
+	SwapBlobs(BlockStreamInfo, target.BlockStreamInfo);
+	SwapBlobs(BlockOther, target.BlockOther);
+	oldLen = len;
+	firstAudioPosition = pos;
+	blocksDamaged = damaged;
+	return result;
+}
+
 // Copies count bytes in blocks of 1 MB; false on a short read or write
 static bool CopyFileBytes(FILE *Source, FILE *Destination, __int64 count)
 {

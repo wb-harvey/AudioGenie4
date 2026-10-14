@@ -130,14 +130,20 @@ static CID3F_COMM* findPlainComment()
 	return (result != NULL) ? result : described;
 }
 
-// FLAC and WAV saves rewrite the file from the analyzed file's layout (block lengths, chunk positions), so they
-// only save into the analyzed file itself: another file was overwritten with that layout (4.0.4.6 and earlier)
-static bool isAnalyzedFile(LPCWSTR FileName, short format)
+// FLAC and WAV saves into a file other than the analyzed one (SaveToOtherFile) keep that file's own layout (blocks,
+// chunks) and audio; the analyzed file's layout was written over it (4.0.4.6 and earlier). The tags come from the
+// analyzed file, which must be of the same format.
+static bool isAnalyzedFormat(short format)
 {
-	if (Format == format && !lastFile.IsEmpty() && lastFile.CompareNoCase(FileName) == 0)
+	if (Format == format)
 		return true;
 	CTools::instance().setLastError(ERR_INVALID_FILENAME);
 	return false;
+}
+
+static bool isLastFile(LPCWSTR FileName)
+{
+	return !lastFile.IsEmpty() && lastFile.CompareNoCase(FileName) == 0;
 }
 
 void ClearAllTags()
@@ -483,7 +489,7 @@ extern "C" short __stdcall AUDIOSaveChangesToFileW(LPCWSTR FileName)
 			AUDIOAnalyzeFileW(FileName);
 		return b2s(result);		
 	case AUDIO_FORMAT_FLAC:
-		if (!isAnalyzedFile(FileName, AUDIO_FORMAT_FLAC))
+		if (!isAnalyzedFormat(AUDIO_FORMAT_FLAC))
 			return b2s(false);
 		flac.SetUserItem(VORBIS_ALBUM, Album);
 		flac.SetUserItem(VORBIS_ARTIST, Artist);
@@ -493,7 +499,7 @@ extern "C" short __stdcall AUDIOSaveChangesToFileW(LPCWSTR FileName)
 		flac.SetUserItem(VORBIS_TRACKNUMBER, Track);
 		flac.SetUserItem(VORBIS_DATE, Year); 
 		flac.SetUserItem(VORBIS_COMPOSER, Composer); 
-		return b2s(flac.SaveToFile(FileName));
+		return b2s(isLastFile(FileName) ? flac.SaveToFile(FileName) : flac.SaveToOtherFile(FileName));
 	case AUDIO_FORMAT_OGGVORBIS:
 		ogg.SetUserItem(VORBIS_ALBUM, Album);
 		ogg.SetUserItem(VORBIS_ARTIST, Artist);
@@ -551,7 +557,7 @@ extern "C" short __stdcall AUDIOSaveChangesToFileW(LPCWSTR FileName)
 		CTools::instance().setLastError(ERR_TAG_NOT_ALLOWED);
 		return b2s(false);
 	case AUDIO_FORMAT_WAV:
-		if (!isAnalyzedFile(FileName, AUDIO_FORMAT_WAV))
+		if (!isAnalyzedFormat(AUDIO_FORMAT_WAV))
 			return b2s(false);
 		wav.setTextFrame(WAV_IPRD, Album);
 		wav.setTextFrame(WAV_IART, Artist);
@@ -561,7 +567,7 @@ extern "C" short __stdcall AUDIOSaveChangesToFileW(LPCWSTR FileName)
 		wav.setTextFrame(WAV_IGNR, Genre);
 		wav.setTextFrame(WAV_ITRK, Track);
 		wav.setTextFrame(WAV_IMUS, Composer);
-		result = wav.SaveToFile(FileName);
+		result = isLastFile(FileName) ? wav.SaveToFile(FileName) : wav.SaveToOtherFile(FileName);
 		if (result && !lastFile.IsEmpty() && lastFile.CompareNoCase(FileName) == 0)
 			AUDIOAnalyzeFileW(FileName);
 		return b2s(result);		
@@ -1498,7 +1504,7 @@ extern "C" short __stdcall FLACSaveChangesToFileW(LPCWSTR FileName)
 {
 	FileName = getValidPointer(FileName);
 	if (GetFormat(FileName) == AUDIO_FORMAT_FLAC)
-		return b2s(isAnalyzedFile(FileName, AUDIO_FORMAT_FLAC) && flac.SaveToFile(FileName));
+		return b2s(isAnalyzedFormat(AUDIO_FORMAT_FLAC) && (isLastFile(FileName) ? flac.SaveToFile(FileName) : flac.SaveToOtherFile(FileName)));
 	CTools::instance().setLastError(ERR_TAG_NOT_ALLOWED);
 	return b2s(false);  
 }
@@ -8301,9 +8307,9 @@ extern "C" short __stdcall WAVSaveChangesToFileW(LPCWSTR FileName)
 	FileName = getValidPointer(FileName);	
 	if (GetFormat(FileName) != AUDIO_FORMAT_INVALID)
 	{
-		if (!isAnalyzedFile(FileName, AUDIO_FORMAT_WAV))
+		if (!isAnalyzedFormat(AUDIO_FORMAT_WAV))
 			return b2s(false);
-		bool result = wav.SaveToFile(FileName);
+		bool result = isLastFile(FileName) ? wav.SaveToFile(FileName) : wav.SaveToOtherFile(FileName);
 		if (result && !lastFile.IsEmpty() && lastFile.CompareNoCase(FileName) == 0)
 			AUDIOAnalyzeFileW(FileName);
 		return b2s(result);

@@ -25,8 +25,11 @@ All formats
 - AUDIOGetVersionW, AUDIOGetDurationW and the other AUDIO getters no longer crash before the first analyze.
 - FLAC, WAV, WMA and MP4 rebuilds check every read and write and replace the file only when the copy is complete
   (as ID3v2 and OGG since 4.0.2); a full disk or a dropped network share left a cut file or none.
-- FLACSaveChangesToFileW, WAVSaveChangesToFileW and AUDIOSaveChangesToFileW for FLAC/WAV refuse a file other than
-  the analyzed one (it was rewritten with the analyzed file's layout, over its audio). Error 217.
+- FLACSaveChangesToFileW, WAVSaveChangesToFileW and AUDIOSaveChangesToFileW for FLAC/WAV into a file other than the
+  analyzed one (a copy encoded again from it) keep that file's own blocks/chunks and audio, and write the analyzed
+  file's comments and pictures (FLAC) or INFO/DISP text (WAV). The analyzed file's layout was written over it: a
+  FLAC copy no longer decoded, a WAV copy got the source's fmt chunk (e.g. 16-bit over 24-bit audio). The analyzed
+  file must be of the same format (else error 217).
 ID3v2
 - Frames the library doesn't know (GRP1, MVNM, MVIN, PCST...) are kept on save; they were dropped.
 - Chapter (CHAP/CTOC) titles and descriptions are kept on save; every save removed them.

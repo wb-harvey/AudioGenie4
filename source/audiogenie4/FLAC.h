@@ -87,6 +87,7 @@ public:
   void ResetData();
   bool ReadFromFile(FILE *Stream);
   bool SaveToFile(LPCWSTR FileName);
+  bool SaveToOtherFile(LPCWSTR FileName);
   bool IsValid();
   CAtlArray<CFlacCover *> covers;
   long GetBitRate();
