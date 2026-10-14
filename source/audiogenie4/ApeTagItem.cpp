@@ -48,7 +48,8 @@ bool CApeTagItem::ReadFromFile(FILE *Stream)
   tmp.FileRead(8, Stream);
   Flags = 0;
   Size = (long)tmp.GetR4B(0);   // Tag size including footer
-  if (Size < 0 || (ftell(Stream) + Size + CTools::ID3v1Size) > CTools::FileSize )
+  // (in 64 bits: a size near 2 GB wrapped the 32-bit sum negative, passed, and a 2 GB value was allocated)
+  if (Size < 0 || ((__int64)ftell(Stream) + Size + CTools::ID3v1Size) > (__int64)CTools::FileSize )
 	  return false;
   Flags = (long)tmp.GetR4B(4);  // Tag flags
   Key.Empty();

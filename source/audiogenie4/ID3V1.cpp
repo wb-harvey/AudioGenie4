@@ -89,6 +89,9 @@ void CID3V1::ReadFromFile(FILE *Stream)
 {
 	/* Reset and load tag data from file to variable */
 	//fseek(Stream, -ID3V1_TAG_SIZE, SEEK_END);
+	// (reset first: a file without an ID3v1 tag kept the size of the last one read with one, and an APE save on it
+	// looked for its footer 128 bytes too early and cut 128 bytes off the end)
+	CTools::ID3v1Size = 0;
 	if (id3v1tag.ReadFromFile(Stream))
 	{
 		CTools::ID3v1Size = ID3V1_TAG_SIZE;		

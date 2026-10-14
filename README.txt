@@ -17,6 +17,14 @@ This library is far superior to TagLibSharp when dealing with ID3v1, ID3v2.3, ID
 TagLibSharp uses a dangerous anti-pattern of metadata consolidation and responds to requests for tag data by giving results for other tags.
 This regularly results in garbage tag data or file corruption because different tags use different encodings (ANSI, UTF-8, UTF-16). 
 
+Version 4.0.4.6
+- An APE item whose size is near 2 GB no longer crashes the read: the size check wrapped around in 32 bits, passed,
+  and a 2 GB value was allocated (an exception out of the DLL ends the calling app on x86).
+- An APE tag before a Lyrics3 tag is read (it read as no APE tag), and a save replaces it, moving the Lyrics3 tag
+  down (a second APE tag was added after the Lyrics3 tag).
+- A file without an ID3v1 tag no longer takes the ID3v1 size of the last file read with one (an APE save on it
+  looked for the footer 128 bytes early and cut 128 bytes off the end).
+- A damaged APE item read no longer leaks it.
 Version 4.0.4.5
 - APESaveChangesToFile and APERemoveTag check the APE footer's size before cutting: below 32 bytes (a size of
   2 GB or more read as negative) or reaching the start of the file with the ID3v1 tag, the tag is damaged and

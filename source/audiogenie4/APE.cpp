@@ -31,8 +31,11 @@
 //////////////////////////////////////////////////////////////////////
 // Konstruktion/Destruktion
 //////////////////////////////////////////////////////////////////////
+static long Lyrics3BlockSize(FILE *Stream); // (below)
+
 CAPE::CAPE()
 {
+	FLyricsSkip = 0;
 	_items.SetCount(0, 20);
 }
 CAPE::~CAPE()
@@ -58,8 +61,19 @@ void CAPE::ResetData()
 bool CAPE::ReadFooter(FILE *Stream)
 {
 	/* Read footer data */
+	FLyricsSkip = 0;
 	fseek(Stream, - CTools::ID3v1Size - APE_TAG_FOOTER_SIZE, SEEK_END);
-	return TagInfo.ReadFromFile(Stream);  
+	if (TagInfo.ReadFromFile(Stream))
+		return true;
+	// before a Lyrics3 tag (other taggers put the APE tag there): it read as no APE tag, and a save added a second
+	long lyrics = Lyrics3BlockSize(Stream);
+	if (lyrics <= 0)
+		return false;
+	fseek(Stream, - CTools::ID3v1Size - lyrics - APE_TAG_FOOTER_SIZE, SEEK_END);
+	if (!TagInfo.ReadFromFile(Stream))
+		return false;
+	FLyricsSkip = lyrics;
+	return true;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -134,7 +148,7 @@ bool CAPE::ReadFields(FILE *Stream)
 {
 	CAtlString FieldName;
 	long Iterator;
-	fseek(Stream, -CTools::ID3v1Size - TagInfo.Size, SEEK_END);
+	fseek(Stream, -CTools::ID3v1Size - FLyricsSkip - TagInfo.Size, SEEK_END);
 	/* Read all stored fields */
 	for (Iterator = 0; Iterator < TagInfo.Fields; Iterator++)
 	{
@@ -142,12 +156,91 @@ bool CAPE::ReadFields(FILE *Stream)
 		item = new CApeTagItem();
 		if (item->ReadFromFile(Stream) == false)
 		{
+			delete item; // (it isn't in _items yet: ResetData doesn't free it)
+			item = NULL;
 			ResetData();
 			return false;
 		}
 		_items.Add(item);
 	}
 	return true;
+}
+
+/* -------------------------------------------------------------------------- */
+
+// The size of a Lyrics3 tag (v1 or v2) right before the file's ID3v1 tag, its "LYRICSBEGIN" to its
+// "LYRICSEND"/"LYRICS200"; 0 when there is none.
+static long Lyrics3BlockSize(FILE *Stream)
+{
+	if (CTools::ID3v1Size != ID3V1_TAG_SIZE)
+		return 0; // (a Lyrics3 tag is always followed by an ID3v1 tag)
+	__int64 end = _filelengthi64(_fileno(Stream)) - ID3V1_TAG_SIZE;
+	if (end < 9 + 11)
+		return 0;
+	char tail[9];
+	if (_fseeki64(Stream, end - 9, SEEK_SET) != 0 || fread(tail, 1, 9, Stream) != 9)
+		return 0;
+	__int64 start = -1;
+	if (memcmp(tail, "LYRICS200", 9) == 0)
+	{
+		char digits[7] = { 0 };
+		if (end < 15 + 11 || _fseeki64(Stream, end - 15, SEEK_SET) != 0 || fread(digits, 1, 6, Stream) != 6)
+			return 0;
+		for (int i = 0; i < 6; i++)
+			if (digits[i] < '0' || digits[i] > '9')
+				return 0;
+		start = end - 15 - atol(digits);
+	}
+	else if (memcmp(tail, "LYRICSEND", 9) == 0)
+	{
+		// version 1 has no size: its LYRICSBEGIN is in the 5100 bytes before
+		__int64 from = end - 9 - 5100;
+		if (from < 0)
+			from = 0;
+		int n = (int)(end - 9 - from);
+		char *buf = (char *)malloc(n);
+		if (buf == NULL)
+			return 0;
+		if (_fseeki64(Stream, from, SEEK_SET) == 0 && (int)fread(buf, 1, n, Stream) == n)
+			for (int i = n - 11; i >= 0 && start < 0; i--)
+				if (memcmp(buf + i, "LYRICSBEGIN", 11) == 0)
+					start = from + i;
+		free(buf);
+	}
+	if (start < 0)
+		return 0;
+	char begin[11];
+	if (_fseeki64(Stream, start, SEEK_SET) != 0 || fread(begin, 1, 11, Stream) != 11 || memcmp(begin, "LYRICSBEGIN", 11) != 0)
+		return 0;
+	return (long)(end - start);
+}
+
+/* -------------------------------------------------------------------------- */
+
+// Removes an APE tag of apeSize bytes that sits before a Lyrics3 tag of FLyricsSkip bytes: the Lyrics3 tag is
+// moved down over it and the ID3v1 tag after it is cut (SaveTag / RemoveFromFile write that back).
+bool CAPE::CutBeforeLyrics(LPCWSTR FileName, long apeSize)
+{
+	int fh;
+	if (_wsopen_s(&fh, FileName, _O_RDWR | _O_BINARY, _SH_DENYWR, _S_IREAD | _S_IWRITE) != 0)
+	{
+		CTools::instance().setLastError(errno);
+		return false;
+	}
+	__int64 len = _filelengthi64(fh);
+	__int64 lyricsStart = len - tmpid3v1.GetSize() - FLyricsSkip;
+	__int64 apeStart = lyricsStart - apeSize;
+	char *buf = (apeStart > 0 && FLyricsSkip > 0) ? (char *)malloc(FLyricsSkip) : NULL;
+	bool ok = buf != NULL &&
+		_lseeki64(fh, lyricsStart, SEEK_SET) == lyricsStart && _read(fh, buf, FLyricsSkip) == FLyricsSkip &&
+		_lseeki64(fh, apeStart, SEEK_SET) == apeStart && _write(fh, buf, FLyricsSkip) == FLyricsSkip &&
+		_chsize_s(fh, apeStart + FLyricsSkip) == 0;
+	if (buf != NULL)
+		free(buf);
+	_close(fh);
+	if (!ok)
+		CTools::instance().setLastError(ERR_INVALID_FORMAT);
+	return ok;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -254,7 +347,7 @@ bool CAPE::ReadFromFile(FILE *Stream)
 	/* Process data if loaded and footer is valid */
 	// a footer whose size can't be: below its own 32 bytes (2 GB or more reads negative), or longer than the
 	// file with the ID3v1 tag (the fields were then read from wherever the failed seek left the stream)
-	if (ReadFooter(Stream) && TagInfo.Size >= 32 && (__int64)TagInfo.Size + CTools::ID3v1Size <= (__int64)CTools::FileSize)
+	if (ReadFooter(Stream) && TagInfo.Size >= 32 && (__int64)TagInfo.Size + CTools::ID3v1Size + FLyricsSkip <= (__int64)CTools::FileSize)
 	{
 		CTools::APESize = TagInfo.Size;
 		FVersion = TagInfo.Version;
@@ -287,14 +380,19 @@ bool CAPE::RemoveFromFile(LPCWSTR FileName, bool saveID3v1Tag)
 			bool damaged = TagInfo.Size < 32;
 			if ( (TagInfo.Flags >> 31) != 0 )
 				TagInfo.Size+= APE_TAG_HEADER_SIZE;
-			if (damaged || TagInfo.Size < 32 || (__int64)TagInfo.Size + tmpid3v1.GetSize() >= fileLength)
+			if (damaged || TagInfo.Size < 32 || (__int64)TagInfo.Size + tmpid3v1.GetSize() + FLyricsSkip >= fileLength)
 			{
 				CTools::instance().setLastError(ERR_INVALID_FORMAT);
 				TagInfo.Reset();
 				return false;
 			}
 			// APE + ID3v1 Tag löschen!
-			result = TruncateFile(FileName, tmpid3v1.GetSize() + TagInfo.Size);
+			// (a tag before a Lyrics3 tag: cut out from between, the Lyrics3 tag moved down over it; the ID3v1 tag goes
+			// with the cut as below, and is written back after the new APE tag)
+			if (FLyricsSkip > 0)
+				result = CutBeforeLyrics(FileName, TagInfo.Size);
+			else
+				result = TruncateFile(FileName, tmpid3v1.GetSize() + TagInfo.Size);
 			// ID3v1-Tag wieder speichern falls vorhanden und erwünscht
 			if (saveID3v1Tag && tmpid3v1.GetSize() > 0)
 				tmpid3v1.SaveToFile(FileName);

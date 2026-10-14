@@ -61,6 +61,8 @@ private:
 	CApeTagItem* item;
 	CBlob Data;
 	bool ReadFooter(FILE *Stream);
+	long FLyricsSkip; // a Lyrics3 tag between the APE tag and the ID3v1 tag: its size (0: none)
+	bool CutBeforeLyrics(LPCWSTR FileName, long apeSize);
 	bool ReadFields(FILE *Stream);
 	bool TruncateFile(LPCWSTR FileName, int Offset);
 	bool SaveTag(LPCWSTR FileName);
