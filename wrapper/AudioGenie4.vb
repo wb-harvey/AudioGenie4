@@ -294,9 +294,15 @@ Namespace AudioGenie
 
         Private Shared Function SafeStr(ptr As IntPtr) As String
             If ptr = IntPtr.Zero Then Return String.Empty
-            Dim result As String = Marshal.PtrToStringUni(ptr)
-            If result Is Nothing Then Return String.Empty
-            Return result
+            ' every string the DLL returns is a new BSTR (AllocSysString): read it, then free it (each getter call
+            ' leaked one before)
+            Try
+                Dim result As String = Marshal.PtrToStringBSTR(ptr)
+                If result Is Nothing Then Return String.Empty
+                Return result
+            Finally
+                Marshal.FreeBSTR(ptr)
+            End Try
         End Function
 
         Public Shared ReadOnly PictureTypeText() As String = {

@@ -82,6 +82,8 @@ WMA / WAV / MPEG
 Wrappers
 - C#: WAVSaveChangesW returns short (it was declared IntPtr: on x64 a failed WAV save could read as success);
   WAVSetCartChunkEntryW returns nothing. VB: ID3V2SetAddendumDescriptionW/TitleW return Short, not Integer.
+- C# and VB: every string getter frees the BSTR the DLL returns (SafeStr: PtrToStringBSTR + FreeBSTR); each call
+  leaked it, which added up over long library scans.
 
 Version 4.0.4.6
 - An APE item whose size is near 2 GB no longer crashes the read: the size check wrapped around in 32 bits, passed,

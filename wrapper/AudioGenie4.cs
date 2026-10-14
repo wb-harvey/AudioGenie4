@@ -298,7 +298,16 @@ namespace AudioGenie
         private static string SafeStr(IntPtr ptr)
         {
             if (ptr == IntPtr.Zero) return string.Empty;
-            return System.Runtime.InteropServices.Marshal.PtrToStringUni(ptr) ?? string.Empty;
+            // every string the DLL returns is a new BSTR (AllocSysString): read it, then free it (each getter call
+            // leaked one before)
+            try
+            {
+                return System.Runtime.InteropServices.Marshal.PtrToStringBSTR(ptr) ?? string.Empty;
+            }
+            finally
+            {
+                System.Runtime.InteropServices.Marshal.FreeBSTR(ptr);
+            }
         }
         public const string WM_ALBUMARTIST = "WM/AlbumArtist";
         public const string WM_ALBUMTITLE = "WM/AlbumTitle";
